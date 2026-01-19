@@ -1,0 +1,81 @@
+services:
+  # PostgreSQL database (source and sink)
+  postgres:
+    image: postgres:14
+    container_name: gdelt-postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: gdelt
+      POSTGRES_USER: flink_user
+      POSTGRES_PASSWORD: flink_pass
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=logical"              # Required for CDC
+      - "-c"
+      - "max_wal_senders=10"             # CDC connections
+      - "-c"
+      - "max_replication_slots=10"       # CDC slots
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flink_user -d gdelt"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flink-network
+
+  # Flink Job Manager (master/coordinator)
+  jobmanager:
+    image: flink:1.18-scala_2.12
+    container_name: flink-jobmanager
+    hostname: jobmanager
+    ports:
+      - "8081:8081"  # Flink Web UI
+    command: jobmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        parallelism.default: 2
+        taskmanager.numberOfTaskSlots: 4
+    volumes:
+      - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
+      - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
+      - flink_data:/tmp
+    networks:
+      - flink-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Flink Task Manager (worker)
+  taskmanager:
+    image: flink:1.18-scala_2.12
+    container_name: flink-taskmanager
+    hostname: taskmanager
+    command: taskmanager
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        parallelism.default: 2
+    volumes:
+      - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
+      - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
+      - flink_data:/tmp
+    networks:
+      - flink-network
+    depends_on:
+      - jobmanager
+
+volumes:
+  postgres_data:
+  flink_data:
+
+networks:
+  flink-network:
+    driver: bridge
