@@ -1,4 +1,4 @@
-# GDELT Incremental Processing Project
+# GLOBAL CONFLICT MONITOR
 
 Real-time analytics dashboard using PostgreSQL CDC, Apache Flink, and Streamlit.
 
