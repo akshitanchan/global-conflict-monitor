@@ -5,7 +5,7 @@
 -- Source table for GDELT events (raw data)
 CREATE TABLE gdelt_events (
     globaleventid BIGSERIAL PRIMARY KEY,
-    event_date INT NOT NULL,
+    event_date DATE NOT NULL,
     source_country TEXT,
     target_country TEXT,
     cameo_code TEXT,
