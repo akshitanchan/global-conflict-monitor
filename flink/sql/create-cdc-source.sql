@@ -22,9 +22,9 @@ CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     'schema-name' = 'public',
     'table-name' = 'gdelt_events',
     'slot.name' = 'gdelt_flink_slot',
-    'debezium.snapshot.mode' = 'initial',
+    'debezium.snapshot.mode' = 'never',
     'debezium.publication.name' = 'gdelt_flink_pub',
-    'debezium.publication.autocreate.mode' = 'disabled',
+    'debezium.publication.autocreate.mode' = 'filtered',
     'debezium.slot.drop.on.stop' = 'false',
     'decoding.plugin.name' = 'pgoutput',
     'changelog-mode' = 'all'
