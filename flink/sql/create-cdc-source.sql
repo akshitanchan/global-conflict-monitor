@@ -1,15 +1,24 @@
--- Create CDC source table
+-- Create CDC source table (updated for padded GDELT dataset)
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,
-    event_date DATE,
-    actor1_country_code STRING,
-    actor2_country_code STRING,
-    event_code STRING,
-    goldstein_scale DECIMAL(10,2),
+    event_date INT,
+    source_country STRING,
+    target_country STRING,
+    cameo_code STRING,
+    num_events INT,
     num_articles INT,
-    avg_tone DECIMAL(10,2),
+    quad_class INT,
+    goldstein_scale DOUBLE,
+    source_geo_type INT,
+    source_geo_lat DOUBLE,
+    source_geo_long DOUBLE,
+    target_geo_type INT,
+    target_geo_lat DOUBLE,
+    target_geo_long DOUBLE,
+    action_geo_type INT,
+    action_geo_lat DOUBLE,
+    action_geo_long DOUBLE,
     event_time TIMESTAMP(3),
-    source_url STRING,
     last_updated TIMESTAMP(3),
     PRIMARY KEY (globaleventid) NOT ENFORCED
 ) WITH (
