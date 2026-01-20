@@ -1,0 +1,32 @@
+# Basics
+jobmanager.rpc.address: jobmanager
+parallelism.default: 2
+taskmanager.numberOfTaskSlots: 4
+
+# Memory (as required on Flink 1.18)
+jobmanager.memory.process.size: 1600m
+taskmanager.memory.process.size: 1728m
+
+# Checkpointing
+execution.checkpointing.interval: 10s
+execution.checkpointing.mode: EXACTLY_ONCE
+execution.checkpointing.timeout: 2min
+execution.checkpointing.min-pause: 5s
+execution.checkpointing.max-concurrent-checkpoints: 1
+
+# Restart strategy
+restart-strategy: fixed-delay
+restart-strategy.fixed-delay.attempts: 10
+restart-strategy.fixed-delay.delay: 5s
+
+# State backend
+state.backend: hashmap
+state.checkpoints.dir: file:///opt/flink/state/checkpoints
+state.savepoints.dir: file:///opt/flink/state/savepoints
+
+# Web UI
+web.refresh-interval: 3000
+
+# Ports
+blob.server.port: 6124
+query.server.port: 6125
