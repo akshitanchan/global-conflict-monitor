@@ -4,8 +4,8 @@ parallelism.default: 2
 taskmanager.numberOfTaskSlots: 4
 
 # Memory (as required on Flink 1.18)
-jobmanager.memory.process.size: 1600m
-taskmanager.memory.process.size: 1728m
+jobmanager.memory.process.size: 2g
+taskmanager.memory.process.size: 8g
 
 # Checkpointing
 execution.checkpointing.interval: 10s
@@ -30,3 +30,7 @@ web.refresh-interval: 3000
 # Ports
 blob.server.port: 6124
 query.server.port: 6125
+
+# Optional: Logging
+taskmanager.logging.level: INFO
+jobmanager.logging.level: INFO

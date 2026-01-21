@@ -52,6 +52,7 @@ services:
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
       - ./flink/sql:/opt/flink/sql:ro
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
     networks:
       - flink-network
     healthcheck:
@@ -83,6 +84,7 @@ services:
     volumes:
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
     networks:
       - flink-network
     depends_on:
