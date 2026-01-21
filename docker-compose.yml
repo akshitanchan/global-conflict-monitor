@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   # PostgreSQL database
   postgres:
@@ -13,11 +15,11 @@ services:
     command:
       - "postgres"
       - "-c"
-      - "wal_level=logical" # Required for CDC
+      - "wal_level=logical"
       - "-c"
-      - "max_wal_senders=10" # CDC connections
+      - "max_wal_senders=10"
       - "-c"
-      - "max_replication_slots=10" # CDC slots
+      - "max_replication_slots=10"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d
@@ -31,24 +33,18 @@ services:
         aliases:
           - gdelt-postgres
 
-  # Flink job manager (master)
+  # Flink JobManager
   jobmanager:
-    user: "0:0"
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        execution.checkpointing.interval: 10s
-        execution.checkpointing.mode: EXACTLY_ONCE
-        state.checkpoints.dir: file:///tmp/flink-checkpoints
-        state.savepoints.dir: file:///tmp/flink-savepoints
     image: flink:1.18-scala_2.12
     container_name: flink-jobmanager
     hostname: jobmanager
     ports:
       - "8081:8081" # Flink Web UI
+    environment:
+      - JOB_MANAGER_HEAP=4g
     command: jobmanager
     volumes:
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
       - ./flink/sql:/opt/flink/sql:ro
@@ -64,23 +60,17 @@ services:
       postgres:
         condition: service_healthy
 
-  # Flink task manager (worker)
+  # Flink TaskManager
   taskmanager:
-    user: "0:0"
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 2
-        execution.checkpointing.interval: 10s
-        execution.checkpointing.mode: EXACTLY_ONCE
-        state.checkpoints.dir: file:///tmp/flink-checkpoints
-        state.savepoints.dir: file:///tmp/flink-savepoints
     image: flink:1.18-scala_2.12
     container_name: flink-taskmanager
     hostname: taskmanager
     command: taskmanager
+    environment:
+      - TASK_MANAGER_HEAP=8g
+      - TASK_MANAGER_MEMORY_PROCESS_SIZE=8g
     volumes:
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
     networks:
