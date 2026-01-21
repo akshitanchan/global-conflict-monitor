@@ -19,4 +19,4 @@ bundles/
 .git/
 vendor/pkg/
 pyenv
-Vagrantfile
+Vagrantfile.venv/
