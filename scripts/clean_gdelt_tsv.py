@@ -1,3 +1,4 @@
+#python clean_gdelt_tsv.py ../../Downloads/GDELT.MASTERREDUCEDV2.TXT ../../Downloads/GDELT_CLEANED.tsv
 import csv
 import sys
 
