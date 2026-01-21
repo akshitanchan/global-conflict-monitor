@@ -5,7 +5,7 @@ import sys
 INPUT_FILE = sys.argv[1]
 OUTPUT_FILE = sys.argv[2]
 
-# Columns we want to keep (must match header exactly)
+# Columns we want to keep (must match header)
 COLUMNS_TO_KEEP = [
     "Date",
     "Source",
