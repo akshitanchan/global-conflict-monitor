@@ -4,30 +4,18 @@
 
 -- Source table for GDELT events (raw data)
 CREATE TABLE gdelt_events (
-    globaleventid BIGSERIAL PRIMARY KEY,
-    event_date DATE NOT NULL,
+    globaleventid BIGSERIAL PRIMARY KEY,  -- auto-increment unique ID
+    event_date INT NOT NULL,              -- YYYYMMDD format
     source_country TEXT,
     target_country TEXT,
     cameo_code TEXT,
-    num_events INT,
-    num_articles INT,
+    num_events DOUBLE PRECISION,
+    num_articles DOUBLE PRECISION,
     quad_class INT,
-    goldstein_scale DOUBLE PRECISION,
-    source_geo_type INT,
-    source_geo_lat DOUBLE PRECISION,
-    source_geo_long DOUBLE PRECISION,
-    target_geo_type INT,
-    target_geo_lat DOUBLE PRECISION,
-    target_geo_long DOUBLE PRECISION,
-    action_geo_type INT,
-    action_geo_lat DOUBLE PRECISION,
-    action_geo_long DOUBLE PRECISION,
-    event_time TIMESTAMP NOT NULL DEFAULT NOW(),
-    last_updated TIMESTAMP DEFAULT NOW()
+    goldstein_scale DOUBLE PRECISION
 );
 
 -- Indexes for faster queries
-CREATE INDEX idx_event_time ON gdelt_events(event_time);
 CREATE INDEX idx_source_country ON gdelt_events(source_country);
 CREATE INDEX idx_target_country ON gdelt_events(target_country);
 CREATE INDEX idx_event_date ON gdelt_events(event_date);
