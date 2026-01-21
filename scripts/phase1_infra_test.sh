@@ -113,12 +113,39 @@ docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
 echo "[ok] flink sql ddl applied"
 
 echo "[check] insert row into gdelt_events"
-pg_exec "insert into public.gdelt_events (globaleventid,event_date,event_time,actor1_country_code,actor2_country_code,event_code,goldstein_scale,num_articles,avg_tone)
-values (${SMOKE_EVENT_ID}, current_date, now(), 'USA','CHN','010', 1.0, 1, 0.5)
-on conflict (globaleventid) do update set avg_tone=excluded.avg_tone, last_updated=now();"
+pg_exec "insert into public.gdelt_events (
+    globaleventid,
+    event_date,
+    event_time,
+    source_country,
+    target_country,
+    cameo_code,
+    goldstein_scale,
+    num_events,
+    num_articles,
+    quad_class
+)
+values (
+    ${SMOKE_EVENT_ID},
+    current_date,
+    now(),
+    'USA',
+    'CHN',
+    '010',
+    1.0,
+    1,
+    1,
+    1
+)
+on conflict (globaleventid) do update 
+    set goldstein_scale = excluded.goldstein_scale,
+        last_updated = now();"
+
 
 echo "[check] update row"
-pg_exec "update public.gdelt_events set avg_tone = avg_tone + 1.0, last_updated = now() where globaleventid=${SMOKE_EVENT_ID};"
+pg_exec "update public.gdelt_events 
+set goldstein_scale = goldstein_scale + 1.0, last_updated = now() 
+where globaleventid=${SMOKE_EVENT_ID};"
 
 echo "[check] delete row"
 pg_exec "delete from public.gdelt_events where globaleventid=${SMOKE_EVENT_ID};"
