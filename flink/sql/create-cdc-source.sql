@@ -1,25 +1,17 @@
--- Create CDC source table (updated for padded GDELT dataset)
+-- ==============================================
+-- Flink CDC Source Table for GDELT
+-- ==============================================
+
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,
     event_date INT,
     source_country STRING,
     target_country STRING,
     cameo_code STRING,
-    num_events INT,
-    num_articles INT,
+    num_events DOUBLE,
+    num_articles DOUBLE,
     quad_class INT,
     goldstein_scale DOUBLE,
-    source_geo_type INT,
-    source_geo_lat DOUBLE,
-    source_geo_long DOUBLE,
-    target_geo_type INT,
-    target_geo_lat DOUBLE,
-    target_geo_long DOUBLE,
-    action_geo_type INT,
-    action_geo_lat DOUBLE,
-    action_geo_long DOUBLE,
-    event_time TIMESTAMP(3),
-    last_updated TIMESTAMP(3),
     PRIMARY KEY (globaleventid) NOT ENFORCED
 ) WITH (
     'connector' = 'postgres-cdc',
@@ -31,10 +23,7 @@ CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     'schema-name' = 'public',
     'table-name' = 'gdelt_events',
     'slot.name' = 'gdelt_flink_slot',
-    'debezium.snapshot.mode' = 'never',
-    'debezium.publication.name' = 'gdelt_flink_pub',
-    'debezium.publication.autocreate.mode' = 'filtered',
-    'debezium.slot.drop.on.stop' = 'false',
+    'debezium.snapshot.mode' = 'initial',
     'decoding.plugin.name' = 'pgoutput',
     'changelog-mode' = 'all'
 );
