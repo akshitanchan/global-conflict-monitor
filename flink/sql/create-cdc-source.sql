@@ -1,17 +1,16 @@
 -- ==============================================
 -- Flink CDC Source Table for GDELT
 -- ==============================================
-
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
-    globaleventid BIGINT,
-    event_date INT,
-    source_country STRING,
-    target_country STRING,
-    cameo_code STRING,
-    num_events DOUBLE,
-    num_articles DOUBLE,
+    globaleventid BIGSERIAL PRIMARY KEY,
+    event_date INT NOT NULL,              -- YYYYMMDD format
+    source_country TEXT,
+    target_country TEXT,
+    cameo_code TEXT,
+    num_events DOUBLE PRECISION,
+    num_articles DOUBLE PRECISION,
     quad_class INT,
-    goldstein_scale DOUBLE,
+    goldstein_scale DOUBLE PRECISION
     PRIMARY KEY (globaleventid) NOT ENFORCED
 ) WITH (
     'connector' = 'postgres-cdc',
