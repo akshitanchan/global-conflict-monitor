@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# starts the streaming INSERT jobs (keeps running)
-# run in its own terminal and stop with ctrl+c
-# if you need a clean reset, run scripts/reset-cdc.sh and restart containers.
-
-FLINK_JM_CONTAINER="${FLINK_JM_CONTAINER:-flink-jobmanager}"
-
-echo "[run] starting streaming aggregations (this will keep running)"
-docker exec -it "$FLINK_JM_CONTAINER" bash -lc "/opt/flink/bin/sql-client.sh -f /opt/flink/sql/02-run-aggregations.sql"
+echo "[run] starting pipeline in one sql-client session (init + streaming inserts)"
+docker exec -it flink-jobmanager bash -lc \
+  "/opt/flink/bin/sql-client.sh \
+     -i /opt/flink/sql/00-init.sql \
+     -f /opt/flink/sql/02-run-aggregations.sql"
