@@ -21,6 +21,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d
+      - ./data:/data:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flink_user -d gdelt"]
       interval: 10s

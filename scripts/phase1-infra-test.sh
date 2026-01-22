@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------- root + compose ----------
+# root + compose
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
@@ -12,7 +12,7 @@ else
   COMPOSE_CMD="docker compose"
 fi
 
-# ---------- config (override via env) ----------
+# config (override via env)
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gdelt-postgres}"
 FLINK_JM_CONTAINER="${FLINK_JM_CONTAINER:-flink-jobmanager}"
 
@@ -27,7 +27,7 @@ CDC_SQL_HOST_PATH="${CDC_SQL_HOST_PATH:-$ROOT_DIR/flink/sql/create-cdc-source.sq
 CDC_SQL_CONTAINER_PATH="${CDC_SQL_CONTAINER_PATH:-/opt/flink/sql/create-cdc-source.sql}"
 SMOKE_EVENT_ID="${SMOKE_EVENT_ID:-999999999}"
 
-# ---------- helpers ----------
+# helpers
 pg_exec() {
   docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -tAc "$1"
@@ -62,11 +62,11 @@ ensure_file_exists() {
   fi
 }
 
-# ---------- bring up ----------
+# bring up
 echo "[up] docker compose up -d"
 $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
-# ---------- checks ----------
+# checks
 wait_for_container_healthy "$POSTGRES_CONTAINER" 90
 
 echo "[check] wal_level"
