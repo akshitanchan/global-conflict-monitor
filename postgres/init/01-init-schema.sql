@@ -1,5 +1,6 @@
 -- ==============================================
 -- GDELT Incremental Processing - Database Schema
+-- Hi, I want contributor
 -- ==============================================
 
 -- Source table for GDELT events (where raw data goes)
