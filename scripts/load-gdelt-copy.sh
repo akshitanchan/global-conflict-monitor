@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# usage:
-#   ./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
-#
-# notes:
+# Load GDELT MASTERREDUCEDV2 data into the gdelt_events table.
 # - this file is tab-separated with a header.
 # - the file has a tiny number of malformed rows (wrong field count / bad bytes).
 # - we stream sanitized rows into \copy FROM STDIN to avoid fragile "FROM PROGRAM" parsing.
@@ -51,9 +48,6 @@ echo "[load] sample counts: $detect_out"
 c17="$(echo "$detect_out" | sed -n 's/.*c17=\([0-9]\+\).*/\1/p')"
 c11="$(echo "$detect_out" | sed -n 's/.*c11=\([0-9]\+\).*/\1/p')"
 
-# IMPORTANT:
-# even if we see a few NF==11 lines, it can just be malformed noise.
-# we choose the dominant shape. your file is overwhelmingly 17 fields.
 expected_nf=17
 cols_clause="event_date,source_actor,target_actor,cameo_code,num_events,num_articles,quad_class,goldstein,source_geo_type,source_geo_lat,source_geo_long,target_geo_type,target_geo_lat,target_geo_long,action_geo_type,action_geo_lat,action_geo_long"
 
@@ -64,11 +58,6 @@ fi
 
 echo "[load] using expected_nf=$expected_nf"
 
-# build the stream command that runs INSIDE the postgres container
-# - skip header
-# - optionally limit rows for quick test
-# - strip null bytes + CR
-# - keep only well-formed rows (NF==expected_nf)
 STREAM_CMD="tail -n +2 \"$container_file\""
 if [[ -n "$SMALL_LOAD_LINES" ]]; then
   echo "[load] small-load mode enabled: first $SMALL_LOAD_LINES data lines"
@@ -78,7 +67,10 @@ fi
 STREAM_CMD="$STREAM_CMD \
   | tr -d '\000' \
   | tr -d '\r' \
-  | awk -F \"\t\" 'NF==$expected_nf'"
+  | awk -F \"\t\" 'BEGIN{OFS=\"\t\"}
+      NF==11 { for(i=12;i<=17;i++) \$i=\"\"; print; next }
+      NF==17 { print; next }
+      { next }'"
 
 echo "[load] streaming sanitized rows into \\copy FROM STDIN..."
 # stream -> psql \copy from stdin (psql runs inside container)
