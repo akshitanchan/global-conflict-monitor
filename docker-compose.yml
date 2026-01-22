@@ -34,14 +34,6 @@ services:
   # Flink job manager (master)
   jobmanager:
     user: "0:0"
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        execution.checkpointing.interval: 10s
-        execution.checkpointing.mode: EXACTLY_ONCE
-        state.checkpoints.dir: file:///tmp/flink-checkpoints
-        state.savepoints.dir: file:///tmp/flink-savepoints
     image: flink:1.18-scala_2.12
     container_name: flink-jobmanager
     hostname: jobmanager
@@ -52,7 +44,7 @@ services:
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
       - ./flink/sql:/opt/flink/sql:ro
-      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
     networks:
       - flink-network
     healthcheck:
@@ -68,15 +60,6 @@ services:
   # Flink task manager (worker)
   taskmanager:
     user: "0:0"
-    environment:
-      - |
-        FLINK_PROPERTIES=
-        jobmanager.rpc.address: jobmanager
-        taskmanager.numberOfTaskSlots: 2
-        execution.checkpointing.interval: 10s
-        execution.checkpointing.mode: EXACTLY_ONCE
-        state.checkpoints.dir: file:///tmp/flink-checkpoints
-        state.savepoints.dir: file:///tmp/flink-savepoints
     image: flink:1.18-scala_2.12
     container_name: flink-taskmanager
     hostname: taskmanager
@@ -84,7 +67,7 @@ services:
     volumes:
       - ./flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar:/opt/flink/lib/flink-sql-connector-postgres-cdc-2.4.2.jar
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
-      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+      - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
     networks:
       - flink-network
     depends_on:

@@ -113,12 +113,10 @@ docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
 echo "[ok] flink sql ddl applied"
 
 echo "[check] insert row into gdelt_events"
-pg_exec "insert into public.gdelt_events (globaleventid,event_date,event_time,actor1_country_code,actor2_country_code,event_code,goldstein_scale,num_articles,avg_tone)
-values (${SMOKE_EVENT_ID}, current_date, now(), 'USA','CHN','010', 1.0, 1, 0.5)
-on conflict (globaleventid) do update set avg_tone=excluded.avg_tone, last_updated=now();"
+pg_exec "insert into public.gdelt_events (globaleventid, event_date, source_actor, target_actor, cameo_code, num_events, num_articles, quad_class, goldstein) values (${SMOKE_EVENT_ID}, to_char(current_date, 'YYYYMMDD')::int, 'USA', 'CHN', '043', 1, 4, 1, 2.8) on conflict (globaleventid) do update set goldstein = excluded.goldstein, num_events = excluded.num_events, num_articles = excluded.num_articles;"
 
 echo "[check] update row"
-pg_exec "update public.gdelt_events set avg_tone = avg_tone + 1.0, last_updated = now() where globaleventid=${SMOKE_EVENT_ID};"
+pg_exec "update public.gdelt_events set goldstein = coalesce(goldstein, 0) + 1.0 where globaleventid = ${SMOKE_EVENT_ID};"
 
 echo "[check] delete row"
 pg_exec "delete from public.gdelt_events where globaleventid=${SMOKE_EVENT_ID};"
