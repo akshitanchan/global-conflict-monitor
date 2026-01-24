@@ -92,3 +92,64 @@ docker compose up -d
 # Check container status
 docker compose ps
 ```
+
+## Phase 2 Quickstart (ingestion + incremental views)
+
+### 0) start containers
+```bash
+./setup.sh
+./scripts/phase1-infra-test.sh
+```
+
+### 1) load data (tab-separated, header)
+Put your big file in `./data/` (docker mounts it into Postgres as `/data`), then run:
+```bash
+./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+```
+
+### 2) create Flink JDBC sinks
+```bash
+./scripts/apply-flink-sinks.sh
+```
+
+### 3) start streaming incremental aggregations (keeps running)
+Run in a separate terminal:
+```bash
+./scripts/start-flink-aggregations.sh
+```
+
+### 4) sanity check results in Postgres
+```bash
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_event_volume_by_quadclass limit 5;"
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from top_actors order by total_events desc limit 10;"
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_cameo_metrics order by total_events desc limit 10;"
+```
+
+### 5) simulate changes (inserts/updates/deletes + late arrivals)
+Install python deps (locally):
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Then run:
+```bash
+python scripts/simulate-changes.py --insert 200
+python scripts/simulate-changes.py --update 50
+python scripts/simulate-changes.py --delete 20
+python scripts/simulate-changes.py --insert 100 --late
+```
+
+You should see the aggregate tables update within seconds.
+
+### Top-K cameo per day
+We compute Top-K by querying the per-day cameo aggregate table:
+```sql
+select cameo_code, total_events
+from daily_cameo_metrics
+where event_date = 19790101
+order by total_events desc
+limit 10;
+```
+This is "bounded" to a single `event_date` bucket.
+

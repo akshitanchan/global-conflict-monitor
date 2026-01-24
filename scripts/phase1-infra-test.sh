@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ---------- root + compose ----------
+# root + compose
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
@@ -12,7 +12,7 @@ else
   COMPOSE_CMD="docker compose"
 fi
 
-# ---------- config (override via env) ----------
+# config (override via env)
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gdelt-postgres}"
 FLINK_JM_CONTAINER="${FLINK_JM_CONTAINER:-flink-jobmanager}"
 
@@ -27,7 +27,7 @@ CDC_SQL_HOST_PATH="${CDC_SQL_HOST_PATH:-$ROOT_DIR/flink/sql/create-cdc-source.sq
 CDC_SQL_CONTAINER_PATH="${CDC_SQL_CONTAINER_PATH:-/opt/flink/sql/create-cdc-source.sql}"
 SMOKE_EVENT_ID="${SMOKE_EVENT_ID:-999999999}"
 
-# ---------- helpers ----------
+# helpers
 pg_exec() {
   docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -tAc "$1"
@@ -62,11 +62,11 @@ ensure_file_exists() {
   fi
 }
 
-# ---------- bring up ----------
+# bring up
 echo "[up] docker compose up -d"
 $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
-# ---------- checks ----------
+# checks
 wait_for_container_healthy "$POSTGRES_CONTAINER" 90
 
 echo "[check] wal_level"
@@ -113,12 +113,10 @@ docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
 echo "[ok] flink sql ddl applied"
 
 echo "[check] insert row into gdelt_events"
-pg_exec "insert into public.gdelt_events (globaleventid,event_date,event_time,actor1_country_code,actor2_country_code,event_code,goldstein_scale,num_articles,avg_tone)
-values (${SMOKE_EVENT_ID}, current_date, now(), 'USA','CHN','010', 1.0, 1, 0.5)
-on conflict (globaleventid) do update set avg_tone=excluded.avg_tone, last_updated=now();"
+pg_exec "insert into public.gdelt_events (globaleventid, event_date, source_actor, target_actor, cameo_code, num_events, num_articles, quad_class, goldstein) values (${SMOKE_EVENT_ID}, to_char(current_date, 'YYYYMMDD')::int, 'USA', 'CHN', '043', 1, 4, 1, 2.8) on conflict (globaleventid) do update set goldstein = excluded.goldstein, num_events = excluded.num_events, num_articles = excluded.num_articles;"
 
 echo "[check] update row"
-pg_exec "update public.gdelt_events set avg_tone = avg_tone + 1.0, last_updated = now() where globaleventid=${SMOKE_EVENT_ID};"
+pg_exec "update public.gdelt_events set goldstein = coalesce(goldstein, 0) + 1.0 where globaleventid = ${SMOKE_EVENT_ID};"
 
 echo "[check] delete row"
 pg_exec "delete from public.gdelt_events where globaleventid=${SMOKE_EVENT_ID};"
