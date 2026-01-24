@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os, random, time
 import psycopg2
+import psycopg2.extras
 from psycopg2.extras import execute_values
 from datetime import datetime
 
@@ -58,29 +59,48 @@ def delete_events(conn, n=20):
     with conn.cursor() as cur:
         cur.execute("SELECT globaleventid FROM public.gdelt_events ORDER BY random() LIMIT %s", (n,))
         ids=[r[0] for r in cur.fetchall()]
-        execute_values(cur, "DELETE FROM public.gdelt_events WHERE globaleventid IN %s", [(tuple(ids),)], template=None)
+        cur.execute(
+            "DELETE FROM public.gdelt_events WHERE globaleventid = ANY(%s)",
+            (ids,)
+        )
     conn.commit()
 
 def main():
     import argparse
     ap=argparse.ArgumentParser(description="simulate inserts/updates/deletes for gdelt_events")
-    ap.add_argument("--insert", type=int, default=0)
-    ap.add_argument("--update", type=int, default=0)
-    ap.add_argument("--delete", type=int, default=0)
+    # allow both styles:
+    #   --insert 50
+    #   --insert --n 50
+    # (same for --update / --delete)
+    ap.add_argument("--n", type=int, default=None, help="default count when using --insert/--update/--delete as flags")
+    ap.add_argument("--insert", nargs="?", const=-1, type=int, default=0, help="number of inserts")
+    ap.add_argument("--update", nargs="?", const=-1, type=int, default=0, help="number of updates")
+    ap.add_argument("--delete", nargs="?", const=-1, type=int, default=0, help="number of deletes")
     ap.add_argument("--late", action="store_true", help="inserts use past dates (late arrivals)")
     args=ap.parse_args()
 
+    def _resolve_count(val: int) -> int:
+        if val == -1:
+            if args.n is None:
+                raise SystemExit("error: you used --insert/--update/--delete without a value; pass --n <int> too")
+            return args.n
+        return val
+
+    ins=_resolve_count(args.insert)
+    upd=_resolve_count(args.update)
+    dele=_resolve_count(args.delete)
+
     conn=connect()
     try:
-        if args.insert:
-            insert_events(conn, args.insert, late=args.late)
-            print(f"inserted {args.insert} rows{' (late)' if args.late else ''}")
-        if args.update:
-            update_events(conn, args.update)
-            print(f"updated {args.update} rows")
-        if args.delete:
-            delete_events(conn, args.delete)
-            print(f"deleted {args.delete} rows")
+        if ins:
+            insert_events(conn, ins, late=args.late)
+            print(f"inserted {ins} rows{' (late)' if args.late else ''}")
+        if upd:
+            update_events(conn, upd)
+            print(f"updated {upd} rows")
+        if dele:
+            delete_events(conn, dele)
+            print(f"deleted {dele} rows")
     finally:
         conn.close()
 

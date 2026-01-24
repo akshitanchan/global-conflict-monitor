@@ -64,13 +64,31 @@ if [[ -n "$SMALL_LOAD_LINES" ]]; then
   STREAM_CMD="$STREAM_CMD | head -n $SMALL_LOAD_LINES"
 fi
 
-STREAM_CMD="$STREAM_CMD \
-  | tr -d '\000' \
-  | tr -d '\r' \
-  | awk -F \"\t\" 'BEGIN{OFS=\"\t\"}
-      NF==11 { for(i=12;i<=17;i++) \$i=\"\"; print; next }
-      NF==17 { print; next }
-      { next }'"
+STREAM_CMD="$STREAM_CMD | tr -d '\000' | tr -d '\r'"
+
+if [[ "$expected_nf" -eq 17 ]]; then
+  # output exactly 17 cols; if we read an 11-col row, map its action geo (9..11) into 15..17
+  STREAM_CMD="$STREAM_CMD | awk -F \"\t\" 'BEGIN{OFS=\"\t\"}
+    NF==17 { print; next }
+    NF==11 {
+      a_type=\$9; a_lat=\$10; a_long=\$11;
+      # clear source + target geo
+      \$9=\"\"; \$10=\"\"; \$11=\"\";
+      \$12=\"\"; \$13=\"\"; \$14=\"\";
+      # put action geo in the right place
+      \$15=a_type; \$16=a_lat; \$17=a_long;
+      print; next
+    }
+    { next }
+  '"
+else
+  # expected_nf == 11: output exactly 11 cols; if we read a 17-col row, take action geo (15..17)
+  STREAM_CMD="$STREAM_CMD | awk -F \"\t\" 'BEGIN{OFS=\"\t\"}
+    NF==11 { print; next }
+    NF==17 { print \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$15,\$16,\$17; next }
+    { next }
+  '"
+fi
 
 echo "[load] streaming sanitized rows into \\copy FROM STDIN..."
 # stream -> psql \copy from stdin (psql runs inside container)
