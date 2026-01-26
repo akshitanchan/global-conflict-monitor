@@ -1,8 +1,9 @@
 import os
 import time
 import select
+import subprocess
 from datetime import date, datetime
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any
 
 import pandas as pd
 import psycopg2
@@ -26,7 +27,7 @@ NOTIFY_CHANNEL = "view_updated"
 
 
 # ----------------------------
-# THEME / CSS (spacing + real Streamlit blocks)
+# THEME / CSS
 # ----------------------------
 st.markdown(
     """
@@ -60,20 +61,15 @@ st.markdown(
         border-right: 1px solid var(--border);
       }
 
-      /* leave room under Streamlit top chrome (Stop/Deploy bar) */
-      .block-container {
-        padding-top: 3.2rem;
-        padding-bottom: 1.6rem;
-      }
+      .block-container { padding-top: 3.0rem; padding-bottom: 1.6rem; }
 
-      /* header row */
       .header-row{
         display:flex;
         align-items:flex-start;
         justify-content:space-between;
         gap: 14px;
         flex-wrap: wrap;
-        margin-bottom: 12px;
+        margin-bottom: 10px;
       }
       .header-left{ min-width: 360px; }
       .header-right{
@@ -85,7 +81,7 @@ st.markdown(
 
       .dash-title{
         font-weight: 900;
-        font-size: 2.15rem;
+        font-size: 2.05rem;
         letter-spacing: -0.04em;
         background: linear-gradient(120deg, #FFFFFF, var(--accent2));
         -webkit-background-clip: text;
@@ -100,13 +96,12 @@ st.markdown(
         font-size: 0.95rem;
       }
 
-      /* chips */
       .chiprow{
         display:flex;
         gap:10px;
         flex-wrap:wrap;
         justify-content:flex-end;
-        align-items:flex-start;
+        align-items:center;
       }
       .chip{
         display:inline-flex;
@@ -143,7 +138,6 @@ st.markdown(
         .chiprow{ justify-content:flex-start; }
       }
 
-      /* KPI cards */
       .kpi {
         background: linear-gradient(135deg, rgba(244,114,182,0.10), rgba(17,24,39,0.62));
         border: 1px solid var(--border2);
@@ -162,7 +156,7 @@ st.markdown(
       }
       .kpi .value {
         color: var(--text);
-        font-size: 1.75rem;
+        font-size: 1.70rem;
         font-weight: 900;
         margin-top: 8px;
         margin-bottom: 4px;
@@ -170,12 +164,9 @@ st.markdown(
       }
       .kpi .hint { color: var(--muted); font-size: 0.86rem; font-weight: 600; }
 
-      /* spacing helpers */
-      .sp-10{ height: 10px; }
       .sp-18{ height: 18px; }
       .sp-26{ height: 26px; }
 
-      /* Make Streamlit charts + tables look like panels (REAL styling) */
       div[data-testid="stPlotlyChart"] > div,
       div[data-testid="stDataFrame"] > div {
         background: linear-gradient(135deg, var(--panel2), var(--panel)) !important;
@@ -238,7 +229,6 @@ def check_notifications() -> bool:
 
     conn = st.session_state.listener_conn
     try:
-        # non-blocking readiness check
         ready = select.select([conn], [], [], 0)
         if ready == ([conn], [], []):
             conn.poll()
@@ -248,7 +238,6 @@ def check_notifications() -> bool:
             return True
 
         return False
-
     except Exception:
         try:
             conn.close()
@@ -258,11 +247,14 @@ def check_notifications() -> bool:
         return False
 
 
+# ----------------------------
+# SESSION STATE INIT
+# ----------------------------
 if "listener_conn" not in st.session_state:
     st.session_state.listener_conn = setup_listener()
 
 if "data_version" not in st.session_state:
-    st.session_state.data_version = 0  # bump this to bust cache
+    st.session_state.data_version = 0
 
 if "last_refresh_time" not in st.session_state:
     st.session_state.last_refresh_time = datetime.now()
@@ -272,6 +264,15 @@ if "last_polled_max_date" not in st.session_state:
 
 if "last_poll_check_ts" not in st.session_state:
     st.session_state.last_poll_check_ts = 0.0
+
+if "processing_time" not in st.session_state:
+    st.session_state.processing_time = None
+if "last_batch_size" not in st.session_state:
+    st.session_state.last_batch_size = 0
+if "last_operation" not in st.session_state:
+    st.session_state.last_operation = "None"
+if "last_throughput" not in st.session_state:
+    st.session_state.last_throughput = None
 
 
 # ----------------------------
@@ -301,7 +302,6 @@ with st.sidebar:
     st.markdown("## Filters")
 
     show_all = st.toggle("All dates (default)", value=True)
-
     if show_all:
         start_d, end_d = min_date, max_date
     else:
@@ -319,54 +319,142 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("## Map")
     map_metric = st.radio("Color by", ["Total Events", "Avg Goldstein"], index=0)
-
     top_n = st.slider("Top N", 10, 50, 20)
 
     st.markdown("---")
     st.markdown("## Live updates")
-
     live_refresh = st.toggle("Live mode", value=True)
-    # this is the CHECK interval (how often Streamlit can notice NOTIFY)
-    refresh_seconds = st.slider("Check interval (seconds)", 1, 30, 5)
-    # fallback poll (max_date) is more expensive; keep slower
+    refresh_seconds = st.slider("Check interval (seconds)", 1, 30, 1)
     poll_seconds = st.slider("Fallback poll (seconds)", 10, 120, 30)
+
+    st.markdown("---")
+    st.markdown("## Benchmark controls")
+
+    # REPLACED INSERT: bulk load COPY
+    ins_lines = st.number_input("Insert lines", min_value=1000, max_value=5_000_000, value=20000, step=1000)
+    ins_file = st.text_input("Input file", value="data/GDELT.MASTERREDUCEDV2.TXT")
+
+    if st.button("Insert", use_container_width=True):
+        start_time = time.time()
+        with st.spinner("Running bulk load..."):
+            try:
+                subprocess.run(
+                    ["bash", "-lc", f"SMALL_LOAD_LINES={int(ins_lines)} ./scripts/load-gdelt-copy.sh {ins_file}"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    env=os.environ.copy(),
+                )
+            except subprocess.CalledProcessError as e:
+                st.error("Insert (bulk load) failed.")
+                st.code((e.stdout or "")[:5000])
+                st.code((e.stderr or "")[:5000])
+                st.stop()
+
+        # wait for NOTIFY (or timeout)
+        deadline = time.time() + 600
+        got = False
+        while time.time() < deadline:
+            if check_notifications():
+                got = True
+                break
+            time.sleep(0.2)
+
+        elapsed = time.time() - start_time
+        st.session_state.processing_time = elapsed
+        st.session_state.last_batch_size = int(ins_lines)
+        st.session_state.last_operation = "INSERT_BULK_COPY"
+        st.session_state.last_throughput = (int(ins_lines) / elapsed) if elapsed > 0 else None
+
+        if not got:
+            st.warning("Bulk load finished, but no NOTIFY arrived within timeout. Aggregations may still be catching up.")
+
+        # force a data refresh next render cycle
+        st.session_state.data_version += 1
+        st.session_state.last_refresh_time = datetime.now()
+
+    upd_n = st.number_input("Update rows", min_value=10, max_value=5_000_000, value=50, step=10)
+    if st.button("Update", use_container_width=True):
+        start_time = time.time()
+        with st.spinner("Running update workload..."):
+            try:
+                subprocess.run(
+                    ["python3", "scripts/simulate-changes.py", "--update", str(int(upd_n))],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                st.error("Update failed.")
+                st.code((e.stdout or "")[:5000])
+                st.code((e.stderr or "")[:5000])
+                st.stop()
+
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if check_notifications():
+                break
+            time.sleep(0.2)
+
+        elapsed = time.time() - start_time
+        st.session_state.processing_time = elapsed
+        st.session_state.last_batch_size = int(upd_n)
+        st.session_state.last_operation = "UPDATE"
+        st.session_state.last_throughput = (int(upd_n) / elapsed) if elapsed > 0 else None
+        st.session_state.data_version += 1
+        st.session_state.last_refresh_time = datetime.now()
+
+    del_n = st.number_input("Delete rows", min_value=10, max_value=5_000_000, value=20, step=10)
+    if st.button("Delete", use_container_width=True):
+        start_time = time.time()
+        with st.spinner("Running delete workload..."):
+            try:
+                subprocess.run(
+                    ["python3", "scripts/simulate-changes.py", "--delete", str(int(del_n))],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                st.error("Delete failed.")
+                st.code((e.stdout or "")[:5000])
+                st.code((e.stderr or "")[:5000])
+                st.stop()
+
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if check_notifications():
+                break
+            time.sleep(0.2)
+
+        elapsed = time.time() - start_time
+        st.session_state.processing_time = elapsed
+        st.session_state.last_batch_size = int(del_n)
+        st.session_state.last_operation = "DELETE"
+        st.session_state.last_throughput = (int(del_n) / elapsed) if elapsed > 0 else None
+        st.session_state.data_version += 1
+        st.session_state.last_refresh_time = datetime.now()
+
+    st.markdown("---")
+    if st.session_state.processing_time is not None:
+        tp = st.session_state.last_throughput
+        tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
+        st.info(
+            f"Last op: {st.session_state.last_operation}\n\n"
+            f"Batch size: {st.session_state.last_batch_size:,}\n\n"
+            f"Processing time: {st.session_state.processing_time:.2f}s\n\n"
+            f"Throughput: {tp_txt}"
+        )
 
 start_int = int_yyyymmdd(start_d)
 end_int = int_yyyymmdd(end_d)
 
 
 # ----------------------------
-# CHANGE DETECTION (NOTIFY + fallback poll)
-# ----------------------------
-got_notify = check_notifications()
-
-polled_new = False
-now_ts = time.time()
-
-# only do the expensive MAX(event_date) poll every poll_seconds
-if live_refresh and (now_ts - st.session_state.last_poll_check_ts) >= poll_seconds:
-    st.session_state.last_poll_check_ts = now_ts
-    try:
-        max_now = qdf("SELECT MAX(event_date) AS m FROM daily_event_volume_by_quadclass;")
-        cur_max = int(max_now.loc[0, "m"]) if not max_now.empty and pd.notna(max_now.loc[0, "m"]) else None
-        if cur_max is not None and st.session_state.last_polled_max_date is not None:
-            if cur_max != st.session_state.last_polled_max_date:
-                polled_new = True
-        st.session_state.last_polled_max_date = cur_max
-    except Exception:
-        pass
-
-if got_notify or polled_new:
-    st.session_state.data_version += 1
-    st.session_state.last_refresh_time = datetime.now()
-
-
-# ----------------------------
-# CACHED DATA LOADERS (heavy queries)
+# CACHED DATA LOADERS
 # ----------------------------
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.DataFrame]:
-    # version is only here to bust cache when NOTIFY/poll says “new data”
     out: Dict[str, pd.DataFrame] = {}
 
     out["kpis"] = qdf(
@@ -479,24 +567,8 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
     return out
 
 
-data = load_all(st.session_state.data_version, start_int, end_int, top_n)
-
-kpis = data["kpis"]
-trend = data["trend"]
-actors = data["actors"]
-dyads = data["dyads"]
-cameo = data["cameo"]
-quad_dist = data["quad_dist"]
-quad_time = data["quad_time"]
-
-total_events = int(kpis.loc[0, "total_events"] or 0)
-conflict_events = int(kpis.loc[0, "conflict_events"] or 0)
-mean_goldstein = float(kpis.loc[0, "mean_goldstein"] or 0.0)
-conflict_rate = (conflict_events / total_events * 100.0) if total_events else 0.0
-
-
 # ----------------------------
-# HEADER
+# HEADER (STATIC)
 # ----------------------------
 chips = [
     f'<div class="chip"><span class="k">Latest</span> {max_date.isoformat()}</div>',
@@ -522,9 +594,6 @@ st.markdown(
 )
 
 
-# ----------------------------
-# KPI ROW
-# ----------------------------
 def kpi_card(label: str, value: str, hint: str):
     st.markdown(
         f"""
@@ -537,218 +606,370 @@ def kpi_card(label: str, value: str, hint: str):
         unsafe_allow_html=True
     )
 
-k1, k2, k3, k4 = st.columns(4)
-with k1: kpi_card("Total events", f"{total_events:,}", "All quad classes")
-with k2: kpi_card("Conflict events", f"{conflict_events:,}", "Quad 3 & 4")
-with k3: kpi_card("Conflict rate", f"{conflict_rate:.1f}%", "Conflict / total")
-with k4: kpi_card("Avg Goldstein", f"{mean_goldstein:.2f}", "Tone (unweighted)")
-
-st.markdown('<div class="sp-26"></div>', unsafe_allow_html=True)
-
 
 # ----------------------------
-# TOP VISUALS
+# LIVE UPDATE ENGINE
 # ----------------------------
-# ----------------------------
-# TOP VISUALS  (MAP bigger, TRENDS smaller)
-# ----------------------------
-# Was: left(trends) right(map)
-# Now: left(map) right(trends)
+def maybe_bump_version_from_live_checks():
+    got_notify = check_notifications()
+    polled_new = False
+    now_ts = time.time()
 
-left, right = st.columns([1.6, 1.0])  # give map more width
+    if live_refresh and (now_ts - st.session_state.last_poll_check_ts) >= poll_seconds:
+        st.session_state.last_poll_check_ts = now_ts
+        try:
+            max_now = qdf("SELECT MAX(event_date) AS m FROM daily_event_volume_by_quadclass;")
+            cur_max = int(max_now.loc[0, "m"]) if not max_now.empty and pd.notna(max_now.loc[0, "m"]) else None
+            if cur_max is not None and st.session_state.last_polled_max_date is not None:
+                if cur_max != st.session_state.last_polled_max_date:
+                    polled_new = True
+            st.session_state.last_polled_max_date = cur_max
+        except Exception:
+            pass
 
-with left:
-    st.subheader("World Map")
-
-    if actors.empty:
-        st.info("No ISO-3 actor rows available in this period.")
-    else:
-        if map_metric == "Avg Goldstein":
-            fig_map = px.choropleth(
-                actors,
-                locations="iso3",
-                locationmode="ISO-3",
-                color="mean_goldstein",
-                hover_name="iso3",
-                hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
-                color_continuous_scale="RdBu_r",
-                color_continuous_midpoint=0,
-                template="plotly_dark",
-            )
-        else:
-            fig_map = px.choropleth(
-                actors,
-                locations="iso3",
-                locationmode="ISO-3",
-                color="total_events",
-                hover_name="iso3",
-                hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
-                color_continuous_scale="Viridis",
-                template="plotly_dark",
-            )
-
-        fig_map.update_layout(
-            height=350,  # bigger map
-            margin=dict(l=0, r=0, t=0, b=0),
-            paper_bgcolor="rgba(0,0,0,0)",
-            geo=dict(
-                bgcolor="rgba(0,0,0,0)",
-                landcolor="rgba(30,41,59,0.55)",
-                showcountries=True,
-                countrycolor="rgba(148,163,184,0.22)",
-                showframe=False,
-                projection_type="natural earth",
-            ),
-        )
-        st.plotly_chart(fig_map, use_container_width=True)
-
-with right:
-    st.subheader("Trends")
-
-    if trend.empty:
-        st.info("No data in this range.")
-    else:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=trend["event_day"], y=trend["total_events"],
-            mode="lines", name="Total",
-            fill="tozeroy"
-        ))
-        fig.add_trace(go.Scatter(
-            x=trend["event_day"], y=trend["conflict_events"],
-            mode="lines", name="Conflict"
-        ))
-        fig.add_trace(go.Scatter(
-            x=trend["event_day"], y=trend["mean_goldstein"],
-            mode="lines", name="Goldstein",
-            line=dict(dash="dot"),
-            yaxis="y2"
-        ))
-
-        fig.update_layout(
-            template="plotly_dark",
-            height=350,  # smaller trends
-            margin=dict(l=16, r=16, t=10, b=10),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            hovermode="x unified",
-            legend=dict(orientation="h", y=1.12),
-            yaxis=dict(title="Events"),
-            yaxis2=dict(title="Goldstein", overlaying="y", side="right"),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    if got_notify or polled_new:
+        st.session_state.data_version += 1
+        st.session_state.last_refresh_time = datetime.now()
 
 
-# ----------------------------
-# LOWER CONTENT
-# ----------------------------
-st.markdown('<div class="sp-18"></div>', unsafe_allow_html=True)
-tab1, tab2, tab3 = st.tabs(["Interactions", "QuadClass", "CAMEO"])
+# If fragments exist: no full-page rerun loop.
+# Only these blocks refresh on a timer.
+if hasattr(st, "fragment"):
 
-with tab1:
-    a, b = st.columns([1.2, 1])
-    with a:
-        st.subheader("Dyad Heatmap")
-        if dyads.empty:
-            st.info("No dyad data available for this range.")
-        else:
-            top_actors_list = pd.concat([dyads["source_actor"], dyads["target_actor"]]).value_counts().head(12).index.tolist()
-            hm = dyads[dyads["source_actor"].isin(top_actors_list) & dyads["target_actor"].isin(top_actors_list)].copy()
-            if hm.empty:
-                st.info("Not enough overlap for a heatmap. Try a broader range.")
+    @st.fragment(run_every=None)
+    def render_dashboard():
+        data = load_all(st.session_state.data_version, start_int, end_int, top_n)
+
+        kpis = data["kpis"]
+        trend = data["trend"]
+        actors = data["actors"]
+        dyads = data["dyads"]
+        cameo = data["cameo"]
+        quad_dist = data["quad_dist"]
+        quad_time = data["quad_time"]
+
+        total_events = int(kpis.loc[0, "total_events"] or 0)
+        conflict_events = int(kpis.loc[0, "conflict_events"] or 0)
+        mean_goldstein = float(kpis.loc[0, "mean_goldstein"] or 0.0)
+        conflict_rate = (conflict_events / total_events * 100.0) if total_events else 0.0
+
+        # KPI row (stable layout)
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: kpi_card("Total events", f"{total_events:,}", "All quad classes")
+        with k2: kpi_card("Conflict events", f"{conflict_events:,}", "Quad 3 and 4")
+        with k3: kpi_card("Conflict rate", f"{conflict_rate:.1f}%", "Conflict / total")
+        with k4:
+            if st.session_state.processing_time is None:
+                kpi_card("Processing time", "—", "Run a workload from the sidebar")
             else:
-                pivot = hm.pivot_table(index="source_actor", columns="target_actor", values="total_events", aggfunc="sum", fill_value=0)
-                fig_hm = go.Figure(data=go.Heatmap(
-                    z=pivot.values, x=pivot.columns, y=pivot.index,
-                    colorscale="Plasma",
-                    hovertemplate="From %{y} → %{x}<br>Events: %{z:,}<extra></extra>",
-                    colorbar=dict(title="Events")
+                tp = st.session_state.last_throughput
+                tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
+                kpi_card(
+                    "Processing time",
+                    f"{st.session_state.processing_time:.2f}s",
+                    f"{st.session_state.last_operation} • {st.session_state.last_batch_size:,} rows • {tp_txt}",
+                )
+
+        st.markdown('<div class="sp-26"></div>', unsafe_allow_html=True)
+
+        # TOP VISUALS (MAP bigger, TRENDS smaller)
+        left, right = st.columns([1.6, 1.0])
+
+        with left:
+            st.subheader("World Map")
+            if actors.empty:
+                st.info("No ISO-3 actor rows available in this period.")
+            else:
+                if map_metric == "Avg Goldstein":
+                    fig_map = px.choropleth(
+                        actors,
+                        locations="iso3",
+                        locationmode="ISO-3",
+                        color="mean_goldstein",
+                        hover_name="iso3",
+                        hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
+                        color_continuous_scale="RdBu_r",
+                        color_continuous_midpoint=0,
+                        template="plotly_dark",
+                    )
+                else:
+                    fig_map = px.choropleth(
+                        actors,
+                        locations="iso3",
+                        locationmode="ISO-3",
+                        color="total_events",
+                        hover_name="iso3",
+                        hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
+                        color_continuous_scale="Viridis",
+                        template="plotly_dark",
+                    )
+
+                fig_map.update_layout(
+                    height=350,
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    geo=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        landcolor="rgba(30,41,59,0.55)",
+                        showcountries=True,
+                        countrycolor="rgba(148,163,184,0.22)",
+                        showframe=False,
+                        projection_type="natural earth",
+                    ),
+                )
+                st.plotly_chart(fig_map, use_container_width=True)
+
+        with right:
+            st.subheader("Trends")
+            if trend.empty:
+                st.info("No data in this range.")
+            else:
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=trend["event_day"], y=trend["total_events"],
+                    mode="lines", name="Total",
+                    fill="tozeroy"
                 ))
-                fig_hm.update_layout(
-                    template="plotly_dark", height=380,
+                fig.add_trace(go.Scatter(
+                    x=trend["event_day"], y=trend["conflict_events"],
+                    mode="lines", name="Conflict"
+                ))
+                fig.add_trace(go.Scatter(
+                    x=trend["event_day"], y=trend["mean_goldstein"],
+                    mode="lines", name="Goldstein",
+                    line=dict(dash="dot"),
+                    yaxis="y2"
+                ))
+
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=350,
+                    margin=dict(l=16, r=16, t=10, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    hovermode="x unified",
+                    legend=dict(orientation="h", y=1.12),
+                    yaxis=dict(title="Events"),
+                    yaxis2=dict(title="Goldstein", overlaying="y", side="right"),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown('<div class="sp-18"></div>', unsafe_allow_html=True)
+
+        tab1, tab2, tab3 = st.tabs(["Interactions", "QuadClass", "CAMEO"])
+
+        with tab1:
+            a, b = st.columns([1.2, 1])
+            with a:
+                st.subheader("Dyad Heatmap")
+                if dyads.empty:
+                    st.info("No dyad data available for this range.")
+                else:
+                    top_actors_list = pd.concat([dyads["source_actor"], dyads["target_actor"]]).value_counts().head(12).index.tolist()
+                    hm = dyads[dyads["source_actor"].isin(top_actors_list) & dyads["target_actor"].isin(top_actors_list)].copy()
+                    if hm.empty:
+                        st.info("Not enough overlap for a heatmap. Try a broader range.")
+                    else:
+                        pivot = hm.pivot_table(index="source_actor", columns="target_actor", values="total_events", aggfunc="sum", fill_value=0)
+                        fig_hm = go.Figure(data=go.Heatmap(
+                            z=pivot.values, x=pivot.columns, y=pivot.index,
+                            colorscale="Plasma",
+                            hovertemplate="From %{y} → %{x}<br>Events: %{z:,}<extra></extra>",
+                            colorbar=dict(title="Events")
+                        ))
+                        fig_hm.update_layout(
+                            template="plotly_dark", height=380,
+                            margin=dict(l=16, r=16, t=10, b=10),
+                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        )
+                        st.plotly_chart(fig_hm, use_container_width=True)
+            with b:
+                st.subheader("Top Dyads")
+                st.dataframe(dyads, use_container_width=True, hide_index=True)
+
+        with tab2:
+            c1, c2 = st.columns([1, 1.4])
+
+            with c1:
+                st.subheader("QuadClass Distribution")
+                if quad_dist.empty:
+                    st.info("No quadclass distribution for this range.")
+                else:
+                    quad_labels = {1: "Q1 Verbal Coop", 2: "Q2 Material Coop", 3: "Q3 Verbal Conflict", 4: "Q4 Material Conflict"}
+                    qd = quad_dist.copy()
+                    qd["quad_label"] = qd["quad_class"].map(quad_labels).fillna(qd["quad_class"].astype(str))
+                    fig_qd = px.bar(
+                        qd, x="quad_label", y="total_events",
+                        template="plotly_dark",
+                        hover_data={"total_events": ":,", "avg_goldstein": ":.2f"},
+                    )
+                    fig_qd.update_layout(
+                        height=380,
+                        margin=dict(l=16, r=16, t=10, b=10),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis_title="", yaxis_title="Events",
+                    )
+                    st.plotly_chart(fig_qd, use_container_width=True)
+
+            with c2:
+                st.subheader("QuadClass Heatmap (Time × Class)")
+                if quad_time.empty:
+                    st.info("No quadclass time series for this range.")
+                else:
+                    pivot = quad_time.pivot(index="quad_class", columns="event_day", values="total_events").fillna(0)
+                    for qc in [1, 2, 3, 4]:
+                        if qc not in pivot.index:
+                            pivot.loc[qc] = 0
+                    pivot = pivot.sort_index()
+                    quad_labels = {1: "Q1 Verbal Coop", 2: "Q2 Material Coop", 3: "Q3 Verbal Conflict", 4: "Q4 Material Conflict"}
+                    y_labels = [quad_labels.get(i, f"Q{i}") for i in pivot.index]
+                    fig_h = go.Figure(data=go.Heatmap(
+                        z=pivot.values, x=pivot.columns, y=y_labels,
+                        colorscale="Magma",
+                        hovertemplate="%{y}<br>%{x}<br>Events: %{z:,}<extra></extra>",
+                        colorbar=dict(title="Events"),
+                    ))
+                    fig_h.update_layout(
+                        template="plotly_dark", height=380,
+                        margin=dict(l=16, r=16, t=10, b=30),
+                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                        xaxis=dict(tickangle=-35), yaxis_title="",
+                    )
+                    st.plotly_chart(fig_h, use_container_width=True)
+
+        with tab3:
+            st.subheader("Top CAMEO Codes")
+            if cameo.empty:
+                st.info("No CAMEO data available for this range.")
+            else:
+                fig_bar = px.bar(
+                    cameo.sort_values("total_events", ascending=True).tail(top_n),
+                    x="total_events", y="cameo_code", orientation="h",
+                    template="plotly_dark",
+                    hover_data={"total_events": ":,", "mean_goldstein": ":.2f"},
+                )
+                fig_bar.update_layout(
+                    height=420,
                     margin=dict(l=16, r=16, t=10, b=10),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    xaxis_title="Events", yaxis_title="",
                 )
-                st.plotly_chart(fig_hm, use_container_width=True)
-    with b:
-        st.subheader("Top Dyads")
-        st.dataframe(dyads, use_container_width=True, hide_index=True)
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-with tab2:
-    c1, c2 = st.columns([1, 1.4])
+    @st.fragment(run_every="1s")
+    def live_tick():
+        if not live_refresh:
+            return
+        maybe_bump_version_from_live_checks()
 
-    with c1:
-        st.subheader("QuadClass Distribution")
-        if quad_dist.empty:
-            st.info("No quadclass distribution for this range.")
+    live_tick()
+    render_dashboard()
+
+else:
+    # Fallback (older Streamlit): you cannot avoid full reruns without fragments.
+    # This keeps behavior correct, but the map will redraw on each rerun.
+    maybe_bump_version_from_live_checks()
+
+    data = load_all(st.session_state.data_version, start_int, end_int, top_n)
+    kpis = data["kpis"]
+    trend = data["trend"]
+    actors = data["actors"]
+    dyads = data["dyads"]
+    cameo = data["cameo"]
+    quad_dist = data["quad_dist"]
+    quad_time = data["quad_time"]
+
+    total_events = int(kpis.loc[0, "total_events"] or 0)
+    conflict_events = int(kpis.loc[0, "conflict_events"] or 0)
+    mean_goldstein = float(kpis.loc[0, "mean_goldstein"] or 0.0)
+    conflict_rate = (conflict_events / total_events * 100.0) if total_events else 0.0
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1: kpi_card("Total events", f"{total_events:,}", "All quad classes")
+    with k2: kpi_card("Conflict events", f"{conflict_events:,}", "Quad 3 and 4")
+    with k3: kpi_card("Conflict rate", f"{conflict_rate:.1f}%", "Conflict / total")
+    with k4:
+        if st.session_state.processing_time is None:
+            kpi_card("Processing time", "—", "Run a workload from the sidebar")
         else:
-            quad_labels = {1: "Q1 Verbal Coop", 2: "Q2 Material Coop", 3: "Q3 Verbal Conflict", 4: "Q4 Material Conflict"}
-            qd = quad_dist.copy()
-            qd["quad_label"] = qd["quad_class"].map(quad_labels).fillna(qd["quad_class"].astype(str))
-            fig_qd = px.bar(
-                qd, x="quad_label", y="total_events",
-                template="plotly_dark",
-                hover_data={"total_events": ":,", "avg_goldstein": ":.2f"},
+            tp = st.session_state.last_throughput
+            tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
+            kpi_card(
+                "Processing time",
+                f"{st.session_state.processing_time:.2f}s",
+                f"{st.session_state.last_operation} • {st.session_state.last_batch_size:,} rows • {tp_txt}",
             )
-            fig_qd.update_layout(
-                height=380,
-                margin=dict(l=16, r=16, t=10, b=10),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis_title="", yaxis_title="Events",
-            )
-            st.plotly_chart(fig_qd, use_container_width=True)
 
-    with c2:
-        st.subheader("QuadClass Heatmap (Time × Class)")
-        if quad_time.empty:
-            st.info("No quadclass time series for this range.")
+    st.markdown('<div class="sp-26"></div>', unsafe_allow_html=True)
+
+    left, right = st.columns([1.6, 1.0])
+    with left:
+        st.subheader("World Map")
+        if actors.empty:
+            st.info("No ISO-3 actor rows available in this period.")
         else:
-            pivot = quad_time.pivot(index="quad_class", columns="event_day", values="total_events").fillna(0)
-            for qc in [1, 2, 3, 4]:
-                if qc not in pivot.index:
-                    pivot.loc[qc] = 0
-            pivot = pivot.sort_index()
-            quad_labels = {1: "Q1 Verbal Coop", 2: "Q2 Material Coop", 3: "Q3 Verbal Conflict", 4: "Q4 Material Conflict"}
-            y_labels = [quad_labels.get(i, f"Q{i}") for i in pivot.index]
-            fig_h = go.Figure(data=go.Heatmap(
-                z=pivot.values, x=pivot.columns, y=y_labels,
-                colorscale="Magma",
-                hovertemplate="%{y}<br>%{x}<br>Events: %{z:,}<extra></extra>",
-                colorbar=dict(title="Events"),
-            ))
-            fig_h.update_layout(
-                template="plotly_dark", height=380,
-                margin=dict(l=16, r=16, t=10, b=30),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                xaxis=dict(tickangle=-35), yaxis_title="",
-            )
-            st.plotly_chart(fig_h, use_container_width=True)
+            if map_metric == "Avg Goldstein":
+                fig_map = px.choropleth(
+                    actors, locations="iso3", locationmode="ISO-3",
+                    color="mean_goldstein",
+                    hover_name="iso3",
+                    hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
+                    color_continuous_scale="RdBu_r", color_continuous_midpoint=0,
+                    template="plotly_dark",
+                )
+            else:
+                fig_map = px.choropleth(
+                    actors, locations="iso3", locationmode="ISO-3",
+                    color="total_events",
+                    hover_name="iso3",
+                    hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
+                    color_continuous_scale="Viridis",
+                    template="plotly_dark",
+                )
+            fig_map.update_layout(height=350, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_map, use_container_width=True)
 
-with tab3:
-    st.subheader("Top CAMEO Codes")
-    if cameo.empty:
-        st.info("No CAMEO data available for this range.")
-    else:
-        fig_bar = px.bar(
-            cameo.sort_values("total_events", ascending=True).tail(top_n),
-            x="total_events", y="cameo_code", orientation="h",
-            template="plotly_dark",
-            hover_data={"total_events": ":,", "mean_goldstein": ":.2f"},
-        )
-        fig_bar.update_layout(
-            height=420,
-            margin=dict(l=16, r=16, t=10, b=10),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            xaxis_title="Events", yaxis_title="",
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+    with right:
+        st.subheader("Trends")
+        if trend.empty:
+            st.info("No data in this range.")
+        else:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=trend["event_day"], y=trend["total_events"], mode="lines", name="Total", fill="tozeroy"))
+            fig.add_trace(go.Scatter(x=trend["event_day"], y=trend["conflict_events"], mode="lines", name="Conflict"))
+            fig.add_trace(go.Scatter(x=trend["event_day"], y=trend["mean_goldstein"], mode="lines", name="Goldstein", line=dict(dash="dot"), yaxis="y2"))
+            fig.update_layout(template="plotly_dark", height=350, hovermode="x unified",
+                              yaxis=dict(title="Events"), yaxis2=dict(title="Goldstein", overlaying="y", side="right"))
+            st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown('<div class="sp-18"></div>', unsafe_allow_html=True)
+    tab1, tab2, tab3 = st.tabs(["Interactions", "QuadClass", "CAMEO"])
+    with tab1:
+        a, b = st.columns([1.2, 1])
+        with a:
+            st.subheader("Dyad Heatmap")
+            if dyads.empty:
+                st.info("No dyad data available for this range.")
+            else:
+                top_actors_list = pd.concat([dyads["source_actor"], dyads["target_actor"]]).value_counts().head(12).index.tolist()
+                hm = dyads[dyads["source_actor"].isin(top_actors_list) & dyads["target_actor"].isin(top_actors_list)].copy()
+                if hm.empty:
+                    st.info("Not enough overlap for a heatmap. Try a broader range.")
+                else:
+                    pivot = hm.pivot_table(index="source_actor", columns="target_actor", values="total_events", aggfunc="sum", fill_value=0)
+                    fig_hm = go.Figure(data=go.Heatmap(z=pivot.values, x=pivot.columns, y=pivot.index, colorscale="Plasma"))
+                    fig_hm.update_layout(template="plotly_dark", height=380)
+                    st.plotly_chart(fig_hm, use_container_width=True)
+        with b:
+            st.subheader("Top Dyads")
+            st.dataframe(dyads, use_container_width=True, hide_index=True)
+    with tab2:
+        st.subheader("QuadClass")
+        st.dataframe(quad_dist, use_container_width=True, hide_index=True)
+    with tab3:
+        st.subheader("CAMEO")
+        st.dataframe(cameo, use_container_width=True, hide_index=True)
 
-# ----------------------------
-# LIVE LOOP (IMPORTANT)
-# ----------------------------
-# Streamlit cannot “receive” NOTIFY while idle.
-# We rerun periodically to check LISTEN, but heavy queries are cached unless data_version changes.
-if live_refresh:
-    time.sleep(refresh_seconds)
-    st.rerun()
+    if live_refresh:
+        time.sleep(refresh_seconds)
+        st.rerun()
