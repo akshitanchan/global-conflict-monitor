@@ -34,3 +34,17 @@ query.server.port: 6125
 # Optional: Logging
 taskmanager.logging.level: INFO
 jobmanager.logging.level: INFO
+
+# Checkpoint optimization
+execution.checkpointing.interval: 30s  # Reduce frequency (was 10s)
+execution.checkpointing.mode: EXACTLY_ONCE
+execution.checkpointing.timeout: 5min
+execution.checkpointing.max-concurrent-checkpoints: 1
+execution.checkpointing.min-pause: 10s  # More time between checkpoints
+
+# State backend optimization
+state.backend: rocksdb  # Better for large state
+state.backend.incremental: true  # Faster checkpoints
+state.backend.rocksdb.block.cache-size: 512m
+state.backend.rocksdb.writebuffer.size: 128m
+state.backend.rocksdb.writebuffer.count: 4

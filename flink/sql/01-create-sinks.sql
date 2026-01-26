@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass_sink (
   'username' = 'flink_user',
   'password' = 'flink_pass',
   'driver' = 'org.postgresql.Driver'
+  'sink.buffer-flush.max-rows' = '5000',         -- Batch writes
+  'sink.buffer-flush.interval' = '2s',           -- Flush every 2s
+  'sink.max-retries' = '3',
+  'sink.parallelism' = '2'                       -- Parallel writes
 );
 
 CREATE TABLE IF NOT EXISTS dyad_interactions_sink (
@@ -35,6 +39,10 @@ CREATE TABLE IF NOT EXISTS dyad_interactions_sink (
   'username' = 'flink_user',
   'password' = 'flink_pass',
   'driver' = 'org.postgresql.Driver'
+  'sink.buffer-flush.max-rows' = '5000',         -- Batch writes
+  'sink.buffer-flush.interval' = '2s',           -- Flush every 2s
+  'sink.max-retries' = '3',
+  'sink.parallelism' = '2'                       -- Parallel writes
 );
 
 CREATE TABLE IF NOT EXISTS top_actors_sink (
@@ -52,6 +60,10 @@ CREATE TABLE IF NOT EXISTS top_actors_sink (
   'username' = 'flink_user',
   'password' = 'flink_pass',
   'driver' = 'org.postgresql.Driver'
+  'sink.buffer-flush.max-rows' = '5000',         -- Batch writes
+  'sink.buffer-flush.interval' = '2s',           -- Flush every 2s
+  'sink.max-retries' = '3',
+  'sink.parallelism' = '2'                       -- Parallel writes
 );
 
 CREATE TABLE IF NOT EXISTS daily_cameo_metrics_sink (
@@ -69,4 +81,8 @@ CREATE TABLE IF NOT EXISTS daily_cameo_metrics_sink (
   'username' = 'flink_user',
   'password' = 'flink_pass',
   'driver' = 'org.postgresql.Driver'
+  'sink.buffer-flush.max-rows' = '5000',         -- Batch writes
+  'sink.buffer-flush.interval' = '2s',           -- Flush every 2s
+  'sink.max-retries' = '3',
+  'sink.parallelism' = '2'                       -- Parallel writes
 );

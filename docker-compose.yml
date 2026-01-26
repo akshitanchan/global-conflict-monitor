@@ -1,5 +1,5 @@
 services:
-  # PostgreSQL database
+  # PostgreSQL database (for GDELT data with CDC enabled)
   postgres:
     image: postgres:14
     container_name: gdelt-postgres
@@ -18,6 +18,30 @@ services:
       - "max_wal_senders=10" # CDC connections
       - "-c"
       - "max_replication_slots=10" # CDC slots
+      - "-c"
+      - "shared_buffers=512MB"           # More memory for caching
+      - "-c"
+      - "effective_cache_size=2GB"
+      - "-c"
+      - "maintenance_work_mem=256MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=16MB"
+      - "-c"
+      - "default_statistics_target=100"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "work_mem=32MB"
+      - "-c"
+      - "max_connections=200"            # More connections for Flink
+      - "-c"
+      - "max_worker_processes=4"
+      - "-c"
+      - "max_parallel_workers_per_gather=2"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d
@@ -31,6 +55,38 @@ services:
       flink-network:
         aliases:
           - gdelt-postgres
+
+  # Baseline PostgreSQL (for performance comparison - NO Flink!)
+  postgres-baseline:
+    image: postgres:14
+    container_name: gdelt-postgres-baseline
+    hostname: postgres-baseline
+    ports:
+      - "5433:5432"  # Different port! 5433 on host, 5432 in container
+    environment:
+      POSTGRES_DB: gdelt_baseline
+      POSTGRES_USER: flink_user
+      POSTGRES_PASSWORD: flink_pass
+    command:
+      - "postgres"
+      # Standard config - NO CDC, NO special tuning
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=2GB"
+      - "-c"
+      - "work_mem=32MB"
+    volumes:
+      - postgres_baseline_data:/var/lib/postgresql/data
+      - ./postgres/baseline-init:/docker-entrypoint-initdb.d
+      - ./data:/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flink_user -d gdelt_baseline"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - flink-network
 
   # Flink job manager (master)
   jobmanager:
@@ -71,6 +127,21 @@ services:
       - ./flink/lib/postgresql-42.7.1.jar:/opt/flink/lib/postgresql-42.7.1.jar
       - ./flink/conf/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml:ro
       - ./flink/lib/flink-connector-jdbc-3.1.2-1.18.jar:/opt/flink/lib/flink-connector-jdbc-3.1.2-1.18.jar
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: jobmanager
+        taskmanager.numberOfTaskSlots: 8
+        parallelism.default: 4
+        taskmanager.memory.process.size: 6144m
+        taskmanager.memory.task.heap.size: 3072m
+        taskmanager.memory.managed.size: 2048m
+        taskmanager.memory.network.min: 512m
+        taskmanager.memory.network.max: 1024m
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 6G
     networks:
       - flink-network
     depends_on:
@@ -78,6 +149,7 @@ services:
 
 volumes:
   postgres_data:
+  postgres_baseline_data:
 
 networks:
   flink-network:
