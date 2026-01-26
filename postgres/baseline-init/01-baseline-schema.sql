@@ -22,28 +22,6 @@ CREATE TABLE IF NOT EXISTS gdelt_events (
     action_geo_long DOUBLE PRECISION
 );
 
--- Indexes (same as main)
-CREATE INDEX IF NOT EXISTS idx_baseline_event_date ON gdelt_events(event_date);
-CREATE INDEX IF NOT EXISTS idx_baseline_source_actor ON gdelt_events(source_actor);
-CREATE INDEX IF NOT EXISTS idx_baseline_target_actor ON gdelt_events(target_actor);
-CREATE INDEX IF NOT EXISTS idx_baseline_cameo_code ON gdelt_events(cameo_code);
-CREATE INDEX IF NOT EXISTS idx_baseline_quad_class ON gdelt_events(quad_class);
-
--- Grant permissions
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO flink_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO flink_user;
-
--- Sample data (minimal)
-INSERT INTO gdelt_events (
-  event_date, source_actor, target_actor, cameo_code,
-  num_events, num_articles, quad_class, goldstein
-) VALUES
-  (20240115, 'USA', 'CHN', '043', 1, 5, 3, -2.5),
-  (20240115, 'GBR', 'FRA', '010', 1, 3, 1, 4.5),
-  (20240115, 'RUS', 'UKR', '190', 2, 12, 4, -8.0);
-
-SELECT 'Baseline database initialized!' as status;
-
 CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass (
     event_date        INT NOT NULL,
     quad_class        INT NOT NULL,
@@ -87,4 +65,26 @@ CREATE TABLE IF NOT EXISTS daily_cameo_metrics (
 
     PRIMARY KEY (event_date, cameo_code)
 );
+
+-- Indexes (same as main)
+CREATE INDEX IF NOT EXISTS idx_baseline_event_date ON gdelt_events(event_date);
+CREATE INDEX IF NOT EXISTS idx_baseline_source_actor ON gdelt_events(source_actor);
+CREATE INDEX IF NOT EXISTS idx_baseline_target_actor ON gdelt_events(target_actor);
+CREATE INDEX IF NOT EXISTS idx_baseline_cameo_code ON gdelt_events(cameo_code);
+CREATE INDEX IF NOT EXISTS idx_baseline_quad_class ON gdelt_events(quad_class);
+
+-- Grant permissions
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO flink_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO flink_user;
+
+-- Sample data (minimal)
+INSERT INTO gdelt_events (
+  event_date, source_actor, target_actor, cameo_code,
+  num_events, num_articles, quad_class, goldstein
+) VALUES
+  (20240115, 'USA', 'CHN', '043', 1, 5, 3, -2.5),
+  (20240115, 'GBR', 'FRA', '010', 1, 3, 1, 4.5),
+  (20240115, 'RUS', 'UKR', '190', 2, 12, 4, -8.0);
+
+SELECT 'Baseline database initialized!' as status;
 
