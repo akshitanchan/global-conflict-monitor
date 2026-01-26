@@ -43,3 +43,48 @@ INSERT INTO gdelt_events (
   (20240115, 'RUS', 'UKR', '190', 2, 12, 4, -8.0);
 
 SELECT 'Baseline database initialized!' as status;
+
+CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass (
+    event_date        INT NOT NULL,
+    quad_class        INT NOT NULL,
+    total_events      BIGINT,
+    total_articles    BIGINT,
+    avg_goldstein     DOUBLE PRECISION,
+    last_updated      TIMESTAMP(3),
+
+    PRIMARY KEY (event_date, quad_class)
+);
+
+CREATE TABLE IF NOT EXISTS dyad_interactions (
+    event_date     INT NOT NULL,
+    source_actor   TEXT NOT NULL,
+    target_actor   TEXT NOT NULL,
+    total_events   BIGINT,
+    avg_goldstein  DOUBLE PRECISION,
+    last_updated   TIMESTAMP(3),
+
+    PRIMARY KEY (event_date, source_actor, target_actor)
+);
+
+CREATE TABLE IF NOT EXISTS top_actors (
+    event_date      INT NOT NULL,
+    source_actor    TEXT NOT NULL,
+    total_events    BIGINT,
+    total_articles  BIGINT,
+    avg_goldstein   DOUBLE PRECISION,
+    last_updated    TIMESTAMP(3),
+
+    PRIMARY KEY (event_date, source_actor)
+);
+
+CREATE TABLE IF NOT EXISTS daily_cameo_metrics (
+    event_date      INT NOT NULL,
+    cameo_code      TEXT NOT NULL,
+    total_events    BIGINT,
+    total_articles  BIGINT,
+    avg_goldstein   DOUBLE PRECISION,
+    last_updated    TIMESTAMP(3),
+
+    PRIMARY KEY (event_date, cameo_code)
+);
+
