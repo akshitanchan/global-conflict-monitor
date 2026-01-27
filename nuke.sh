@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# nuke.sh
-# destroys the entire local setup so you can restart clean with ./setup.sh
-# - stops containers
-# - removes docker volumes (including postgres_data)
-# - removes transient local artifacts
-# optional: remove ./data contents too
-
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
