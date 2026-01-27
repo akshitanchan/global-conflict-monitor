@@ -1,4 +1,4 @@
--- Run with: psql -h localhost -U flink_user -d gdelt -f setup_notifications.sql
+-- Run with: psql -h localhost -U flink_user -d gdelt -f 04-setup-notifications.sql
 
 CREATE OR REPLACE FUNCTION notify_view_change()
 RETURNS trigger AS $$

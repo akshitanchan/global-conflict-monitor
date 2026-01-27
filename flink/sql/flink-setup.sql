@@ -1,9 +1,4 @@
--- one-shot pipeline runner
---
--- runs init (cdc source + jdbc sink table defs) and then starts all streaming
--- aggregations as a single job (statement set).
-
--- 1) init
+-- Flink SQL Setup for GDELT CDC Source Table
 
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,

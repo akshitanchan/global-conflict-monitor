@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "======================================"
-echo "GLOBAL CONFLICT MONITOR - Quick Setup"
-echo "======================================"
+echo "============================================="
+echo "Global Conflict Monitor - Guided Setup"
+echo "============================================="
 echo ""
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.yml}"
@@ -14,6 +14,24 @@ PG_JAR="${JAR_DIR}/postgresql-42.7.1.jar"
 info() { echo "$*"; }
 warn() { echo "Warning: $*" >&2; }
 err()  { echo "Error: $*" >&2; }
+
+ts() { date '+%H:%M:%S'; }
+step() { echo ""; echo "[$(ts)] == $* =="; }
+
+prompt_yn() {
+  local msg="$1" default_yes="${2:-1}" ans
+  if [[ "$default_yes" == "1" ]]; then
+    read -r -p "$msg [Y/n]: " ans || true
+    ans="${ans:-Y}"
+  else
+    read -r -p "$msg [y/N]: " ans || true
+    ans="${ans:-N}"
+  fi
+  case "${ans}" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -159,6 +177,7 @@ wait_for_ready() {
       return 1
     fi
 
+    echo -n "."
     sleep 2
   done
 }
@@ -168,6 +187,133 @@ ensure_permissions() {
   chmod +x scripts/*.sh 2>/dev/null || true
   chmod -R a+r flink/lib 2>/dev/null || true
   mkdir -p scripts flink/lib 2>/dev/null || true
+}
+
+pg_exec() {
+  local sql="$1"
+  docker exec -i -e PGPASSWORD="${POSTGRES_PASSWORD:-flink_pass}" gdelt-postgres \
+    psql -U "${POSTGRES_USER:-flink_user}" -d "${POSTGRES_DB:-gdelt}" -v ON_ERROR_STOP=1 -tAc "$sql"
+}
+
+flink_job_running() {
+  local body
+  body="$(curl -fsS "http://localhost:8081/jobs/overview" 2>/dev/null || true)"
+  [[ -n "$body" ]] || return 1
+  python3 - <<'PY' <<<"$body" >/dev/null 2>&1
+import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+jobs=d.get("jobs") or []
+sys.exit(0 if any(j.get("state")=="RUNNING" for j in jobs) else 1)
+PY
+}
+
+sink_tables_present() {
+  local t
+  for t in daily_event_volume_by_quadclass dyad_interactions top_actors daily_cameo_metrics; do
+    [[ "$(pg_exec "select to_regclass('public.${t}') is not null;")" == "t" ]] || return 1
+  done
+  return 0
+}
+
+light_sanity_checks() {
+  step "quick sanity checks (lightweight)"
+  echo "[check] docker containers"
+  docker ps --format '{{.Names}}' | grep -qx gdelt-postgres || { err "gdelt-postgres not running"; return 1; }
+  docker ps --format '{{.Names}}' | grep -qx flink-jobmanager || { err "flink-jobmanager not running"; return 1; }
+  docker ps --format '{{.Names}}' | grep -qx flink-taskmanager || { err "flink-taskmanager not running"; return 1; }
+  echo "[ok] containers running"
+
+  echo "[check] flink api"
+  curl -fsS "http://localhost:8081/overview" >/dev/null
+  echo "[ok] flink api responding"
+
+  echo "[check] postgres reachable"
+  pg_exec "select 1;" >/dev/null
+  echo "[ok] postgres reachable"
+
+  echo "[check] sink tables"
+  sink_tables_present && echo "[ok] sink tables present" || echo "[warn] sink tables missing (pipeline might not be started yet)"
+
+  echo "[check] flink job"
+  if flink_job_running; then
+    echo "[ok] flink job running"
+  else
+    echo "[warn] no running flink job found"
+  fi
+}
+
+progress_bar() {
+  # usage: progress_bar current total
+  local cur="$1" total="$2" width=40
+  if (( total <= 0 )); then total=1; fi
+  local pct=$(( cur * 100 / total ))
+  if (( pct > 100 )); then pct=100; fi
+  local filled=$(( pct * width / 100 ))
+  local empty=$(( width - filled ))
+  printf "\r["; printf "%0.s#" $(seq 1 "$filled"); printf "%0.s-" $(seq 1 "$empty");
+  printf "] %3d%% (%d/%d)" "$pct" "$cur" "$total"
+}
+
+run_small_load_with_progress() {
+  local file_path="$1"
+  local target_rows="${2:-500000}"
+
+  step "loading a small dataset (${target_rows} rows)"
+  echo "[info] file: $file_path"
+  echo "[info] this uses SMALL_LOAD_LINES=${target_rows} (fast demo load)"
+
+  # run loader in background
+  ( SMALL_LOAD_LINES="$target_rows" ./scripts/setup/load-gdelt-copy.sh "$file_path" ) &
+  local loader_pid=$!
+
+  # poll row count and render a simple progress bar
+  local cur=0
+  while kill -0 "$loader_pid" >/dev/null 2>&1; do
+    cur="$(pg_exec "select count(*) from public.gdelt_events;" 2>/dev/null || echo 0)"
+    cur="${cur//[^0-9]/}"
+    cur="${cur:-0}"
+    progress_bar "$cur" "$target_rows"
+    sleep 2
+  done
+
+  wait "$loader_pid"
+  cur="$(pg_exec "select count(*) from public.gdelt_events;" 2>/dev/null || echo 0)"
+  cur="${cur//[^0-9]/}"
+  cur="${cur:-0}"
+  progress_bar "$cur" "$target_rows"
+  echo ""
+  echo "[ok] load done"
+}
+
+ensure_python_deps() {
+  if command -v streamlit >/dev/null 2>&1; then
+    return 0
+  fi
+  step "python deps"
+  warn "streamlit not found in your shell. to run the dashboard we need python deps."
+  if prompt_yn "install python deps with: python3 -m pip install -r requirements.txt ?" 1; then
+    python3 -m pip install -r requirements.txt
+  else
+    warn "skipping python deps install. you can install later and run: streamlit run app.py"
+  fi
+}
+
+start_streamlit() {
+  step "starting streamlit"
+  ensure_python_deps || true
+  if ! command -v streamlit >/dev/null 2>&1; then
+    warn "streamlit still not available. skipping auto-start."
+    return 0
+  fi
+  mkdir -p logs
+  if command -v lsof >/dev/null 2>&1 && lsof -i :8501 >/dev/null 2>&1; then
+    warn "port 8501 is already in use. streamlit might already be running."
+    return 0
+  fi
+  echo "[run] streamlit run app.py --server.port 8501"
+  nohup streamlit run app.py --server.port 8501 --server.headless true > logs/streamlit.log 2>&1 &
+  echo "[ok] streamlit started: http://localhost:8501"
+  echo "[log] logs/streamlit.log"
 }
 
 main() {
@@ -196,20 +342,73 @@ main() {
 
   ensure_permissions
 
-  info "Starting services..."
+  step "starting services (docker compose)"
   if [[ "$compose" == "docker compose" ]]; then
-    docker compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1
+    docker compose -f "$COMPOSE_FILE" up -d
   else
-    docker-compose -f "$COMPOSE_FILE" up -d >/dev/null 2>&1
+    docker-compose -f "$COMPOSE_FILE" up -d
   fi
 
-  wait_for_ready 120 || true
+  echo "[wait] waiting for postgres + flink jobmanager to be ready"
+  wait_for_ready 180 || true
+  echo ""
 
-  info "Setup complete."
-  info "Flink UI: http://localhost:8081"
-  info "PostgreSQL shell: docker exec -it gdelt-postgres psql -U flink_user -d gdelt"
-  info "Flink SQL client: docker exec -it flink-jobmanager ./bin/sql-client.sh"
-  info "Recommended check: ./scripts/phase1-infra-test.sh"
+  # decide if this is a fresh setup or a resume
+  local is_ready=0
+  if sink_tables_present && flink_job_running; then
+    is_ready=1
+  fi
+
+  if (( is_ready == 1 )); then
+    step "looks already set up"
+    echo "[info] running lightweight checks (no heavy tests by default)"
+    light_sanity_checks || true
+
+    if prompt_yn "run full tests anyway (phase1 + phase2)?" 0; then
+      step "phase1 test"
+      ./scripts/tests/phase1-infra-test.sh
+      step "phase2 test"
+      ./scripts/tests/phase2-cdc-test.sh
+    fi
+  else
+    step "fresh setup / resume setup"
+
+    if prompt_yn "run phase1 infra test now (recommended)?" 1; then
+      step "phase1 test"
+      ./scripts/tests/phase1-infra-test.sh
+    else
+      warn "skipping phase1 test"
+    fi
+
+    # load a small dataset
+    local default_file="data/GDELT.MASTERREDUCEDV2.TXT"
+    local file_path="${GDELT_FILE:-$default_file}"
+
+    if [[ ! -f "$file_path" ]]; then
+      echo ""
+      warn "could not find $file_path"
+      read -r -p "path to the GDELT file to load (tab-separated): " file_path
+    fi
+
+    run_small_load_with_progress "$file_path" 500000
+
+    step "starting flink aggregations"
+    ./scripts/setup/start-flink-aggregations.sh
+
+    if prompt_yn "run phase2 cdc test now (recommended)?" 1; then
+      step "phase2 test"
+      ./scripts/tests/phase2-cdc-test.sh
+    else
+      warn "skipping phase2 test"
+    fi
+  fi
+
+  start_streamlit || true
+
+  step "done"
+  echo "flink ui:       http://localhost:8081"
+  echo "streamlit app:  http://localhost:8501"
+  echo "postgres shell: docker exec -it gdelt-postgres psql -U flink_user -d gdelt"
 }
 
 main "$@"

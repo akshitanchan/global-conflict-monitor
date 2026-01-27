@@ -1,5 +1,5 @@
 -- ==============================================
--- Global Conflict Monitoring - Source Schema
+-- GCM Source Table Schema
 -- ==============================================
 
 -- Source table (raw events)
@@ -35,20 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_gdelt_source_actor ON gdelt_events(source_actor);
 CREATE INDEX IF NOT EXISTS idx_gdelt_target_actor ON gdelt_events(target_actor);
 CREATE INDEX IF NOT EXISTS idx_gdelt_cameo_code ON gdelt_events(cameo_code);
 CREATE INDEX IF NOT EXISTS idx_gdelt_quad_class ON gdelt_events(quad_class);
-
--- Minimal sample rows for smoke testing
-INSERT INTO gdelt_events (
-  globaleventid, event_date, source_actor, target_actor, cameo_code,
-  num_events, num_articles, quad_class, goldstein,
-  source_geo_type, source_geo_lat, source_geo_long,
-  target_geo_type, target_geo_lat, target_geo_long,
-  action_geo_type, action_geo_lat, action_geo_long
-) VALUES
-  (1, 19790101, 'AFR', 'FRA',    '043', 1, 4, 1,  2.8, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
-  (2, 19790101, 'AFR', 'FRA',    '050', 2, 9, 1,  3.5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
-  (3, 19790101, 'ARG', 'CHL',    '172', 2, 4, 4, -5.0, 1, -34, -64, 1, -30, -71, 1, -34, -64),
-  (4, 19790101, 'CHN', 'CHNGOV', '0841', 1, 6, 2,  7.0, 4, 39.9289, 116.388, 4, 39.9289, 116.388, 4, 39.9289, 116.388)
-ON CONFLICT (globaleventid) DO NOTHING;
 
 -- Grant permissions to Flink user
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO flink_user;

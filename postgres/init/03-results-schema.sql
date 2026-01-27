@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS top_actors (
   PRIMARY KEY (event_date, source_actor)
 );
 
--- Top-k cameo codes per day
 CREATE TABLE IF NOT EXISTS daily_cameo_metrics (
   event_date INT NOT NULL,
   cameo_code TEXT NOT NULL,

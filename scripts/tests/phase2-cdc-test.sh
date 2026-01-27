@@ -153,6 +153,18 @@ event_date="${key%,*}"
 quad_class="${key#*,}"
 ok "using key event_date=$event_date quad_class=$quad_class"
 
+baseline="$(pg_exec "select coalesce(total_events,0)||','||coalesce(total_articles,0)
+from public.daily_event_volume_by_quadclass
+where event_date=${event_date} and quad_class=${quad_class};" || true)"
+if [[ -z "$baseline" ]]; then
+  base_events=0
+  base_articles=0
+else
+  base_events="${baseline%,*}"
+  base_articles="${baseline#*,}"
+fi
+ok "baseline sink totals: events=$base_events articles=$base_articles"
+
 INSERTED_IDS="$(pg_exec "
 with template as (
   select
