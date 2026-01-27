@@ -1,5 +1,5 @@
 [theme]
-primaryColor = "#f472b6"  # This makes all progress bars and buttons pink
-backgroundColor = "#0f172a"
-secondaryBackgroundColor = "#1e293b"
-textColor = "#f8fafc"
+primaryColor = "#666666"  # This makes all progress bars and buttons pink
+backgroundColor = "#111111"
+secondaryBackgroundColor = "#333333"
+textColor = "#eeeeee"
