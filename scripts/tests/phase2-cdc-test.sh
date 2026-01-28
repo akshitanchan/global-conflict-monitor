@@ -105,29 +105,90 @@ _="$(wait_for_json "$FLINK_BASE/overview" 40 2)" || die "flink api not respondin
 ok "flink api responding"
 
 echo "[check] flink job running"
-jobs_overview="$(wait_for_json "$FLINK_BASE/jobs/overview" 40 2)" || die "flink /jobs/overview not returning json"
 
-job_state="$(python3 -c '
-import json,sys
-d=json.loads(sys.stdin.read() or "{}")
-jobs=d.get("jobs") or []
-print(jobs[0].get("state","NO_STATE") if jobs else "NO_JOBS")
-' <<<"$jobs_overview")"
+poll_job() {
+  local deadline=$((SECONDS + 30))
+  local job_state="NO_JOBS"
+  local job_jid=""
 
-job_jid="$(python3 -c '
+  while (( SECONDS < deadline )); do
+    local jobs_overview
+    jobs_overview="$(curl -4 -fsS --max-time 2 "$FLINK_BASE/jobs/overview" 2>/dev/null || true)"
+
+    read -r job_state job_jid < <(python3 - <<'PY' <<<"$jobs_overview"
 import json,sys
-d=json.loads(sys.stdin.read() or "{}")
+try:
+  d=json.loads(sys.stdin.read() or "{}")
+except Exception:
+  print("NO_JOBS", "")
+  raise SystemExit
+
 jobs=d.get("jobs") or []
-print(jobs[0].get("jid","") if jobs else "")
-' <<<"$jobs_overview")"
+
+for j in jobs:
+  if j.get("state") == "RUNNING":
+    print("RUNNING", j.get("jid",""))
+    raise SystemExit
+
+non_terminal={"CREATED","INITIALIZING","RESTARTING","RUNNING"}
+for j in jobs:
+  if j.get("state") in non_terminal:
+    print(j.get("state","NO_STATE"), j.get("jid",""))
+    raise SystemExit
+
+print("NO_JOBS", "")
+PY
+)
+    [[ "$job_state" == "RUNNING" ]] && { echo "$job_state $job_jid"; return 0; }
+    [[ "$job_state" != "NO_JOBS" ]] && { echo "$job_state $job_jid"; return 0; }
+
+    sleep 2
+  done
+
+  echo "NO_JOBS "
+  return 1
+}
+
+read -r job_state job_jid < <(poll_job)
 
 if [[ "$job_state" == "NO_JOBS" ]]; then
-  die "no flink jobs running. start the pipeline first:
-./scripts/setup/start-flink-aggregations.sh
-or, manually:
-docker exec -it ${FLINK_JM_CONTAINER} ./bin/sql-client.sh -f /opt/flink/sql/02-pipeline.sql"
+  echo "no flink jobs running. starting the pipeline..."
+  ./scripts/setup/start-flink-aggregations.sh
+
+  # now wait longer for it to show up and become RUNNING
+  deadline=$((SECONDS + 90))
+  job_state="NO_JOBS"
+  job_jid=""
+  while (( SECONDS < deadline )); do
+    read -r job_state job_jid < <(python3 - <<'PY' <<<"$(curl -4 -fsS --max-time 2 "$FLINK_BASE/jobs/overview" 2>/dev/null || true)"
+import json,sys
+try:
+  d=json.loads(sys.stdin.read() or "{}")
+except Exception:
+  print("NO_JOBS", "")
+  raise SystemExit
+jobs=d.get("jobs") or []
+for j in jobs:
+  if j.get("state") == "RUNNING":
+    print("RUNNING", j.get("jid",""))
+    raise SystemExit
+non_terminal={"CREATED","INITIALIZING","RESTARTING","RUNNING"}
+for j in jobs:
+  if j.get("state") in non_terminal:
+    print(j.get("state","NO_STATE"), j.get("jid",""))
+    raise SystemExit
+print("NO_JOBS", "")
+PY
+)"
+    [[ "$job_state" == "RUNNING" ]] && break
+    sleep 2
+  done
 fi
-[[ "$job_state" == "RUNNING" ]] || die "flink job not RUNNING (state=$job_state)"
+
+if [[ "$job_state" == "NO_JOBS" ]]; then
+  die "no flink jobs visible yet via rest api. check ui: http://localhost:8081"
+fi
+[[ "$job_state" == "RUNNING" ]] || die "flink job not RUNNING yet (state=$job_state, jid=$job_jid)"
 ok "flink job is RUNNING (jid=$job_jid)"
 
 # 3) replication streaming

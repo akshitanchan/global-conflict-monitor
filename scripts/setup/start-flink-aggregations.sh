@@ -18,13 +18,9 @@ if [[ -n "${SQL_FILE_CONTAINER}" ]]; then
   docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
     "/opt/flink/bin/sql-client.sh -f '$SQL_FILE_CONTAINER'"
 else
-  echo "[run] applying flink ddl: ${DDL_SQL_CONTAINER}"
+  echo "[run] initializing session (ddl) + submitting pipeline (single session)"
   docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
-    "/opt/flink/bin/sql-client.sh -f '$DDL_SQL_CONTAINER' >/tmp/sql_ddl.log 2>&1 || (tail -n 200 /tmp/sql_ddl.log && exit 1)"
-
-  echo "[run] submitting flink pipeline: ${PIPELINE_SQL_CONTAINER}"
-  docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
-    "/opt/flink/bin/sql-client.sh -f '$PIPELINE_SQL_CONTAINER'"
+    "/opt/flink/bin/sql-client.sh -i '$DDL_SQL_CONTAINER' -f '$PIPELINE_SQL_CONTAINER'"
 fi
 
 echo "[ok] flink pipeline submitted. check the flink ui for job status: http://localhost:8081"
