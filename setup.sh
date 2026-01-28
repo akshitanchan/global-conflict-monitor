@@ -199,18 +199,26 @@ flink_job_running() {
   local body
   body="$(curl -fsS "http://localhost:8081/jobs/overview" 2>/dev/null || true)"
   [[ -n "$body" ]] || return 1
-  python3 - <<'PY' <<<"$body" >/dev/null 2>&1
+
+  python3 -c '
 import json,sys
-d=json.loads(sys.stdin.read() or "{}")
+d=json.load(sys.stdin)
 jobs=d.get("jobs") or []
-sys.exit(0 if any(j.get("state")=="RUNNING" for j in jobs) else 1)
-PY
+raise SystemExit(0 if any(j.get("state")=="RUNNING" for j in jobs) else 1)
+' <<<"$body" >/dev/null 2>&1
+}
+
+gdelt_has_data() {
+  local n
+  n="$(pg_exec "select count(*) from public.gdelt_events;")"
+  n="${n//[^0-9]/}"
+  [[ "${n:-0}" -ge 1000 ]]
 }
 
 sink_tables_present() {
   local t
   for t in daily_event_volume_by_quadclass dyad_interactions top_actors daily_cameo_metrics; do
-    [[ "$(pg_exec "select to_regclass('public.${t}') is not null;")" == "t" ]] || return 1
+    [[ "$(pg_exec "select to_regclass('public.${t}') is not null;" | tr -d '[:space:]')" == "t" ]] || return 1
   done
   return 0
 }
@@ -355,7 +363,7 @@ main() {
 
   # decide if this is a fresh setup or a resume
   local is_ready=0
-  if sink_tables_present && flink_job_running; then
+  if sink_tables_present && flink_job_running && gdelt_has_data; then
     is_ready=1
   fi
 

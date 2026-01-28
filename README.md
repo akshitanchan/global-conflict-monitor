@@ -137,6 +137,16 @@ python scripts/simulate-changes.py --insert 100 --late
 
 You should see the aggregate tables update within seconds.
 
+## Dashboard workflow (phase 1)
+
+the streamlit app is a **viewer + batch trigger + benchmark viewer**.
+
+- do the **initial bulk load** from cli (or the app's **admin** tab if you really want), then start the flink jobs.
+- use the sidebar **run batch** button to apply a delta workload and measure:
+  - end-to-end incremental catch-up time (batch boundary detected via a marker actor)
+  - baseline full recompute time (COUNT(*) wrappers; no baseline tables required)
+  - correctness checks for impacted dates (event totals, quad breakdown, top-k match rates)
+
 ### Top-K cameo per day
 We compute Top-K by querying the per-day cameo aggregate table:
 ```sql
@@ -147,4 +157,3 @@ order by total_events desc
 limit 10;
 ```
 This is "bounded" to a single `event_date` bucket.
-

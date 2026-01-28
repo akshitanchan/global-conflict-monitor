@@ -1,7 +1,9 @@
 import os
+import sys
 import time
 import select
 import subprocess
+from uuid import uuid4
 from datetime import date, datetime
 from typing import Optional, Dict, Any
 
@@ -11,7 +13,6 @@ import psycopg2.extensions
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
-
 
 # ----------------------------
 # CONFIG
@@ -24,6 +25,9 @@ DB_USER = os.getenv("DB_USER", "flink_user")
 DB_PASS = os.getenv("DB_PASS", "flink_pass")
 
 NOTIFY_CHANNEL = "view_updated"
+
+# marker actors used to detect batch boundaries
+MARKER_PREFIX = "__batch_"
 
 
 # ----------------------------
@@ -208,6 +212,252 @@ def int_yyyymmdd(d: date) -> int:
     return int(d.strftime("%Y%m%d"))
 
 
+def marker_actor(batch_id: str) -> str:
+    return f"{MARKER_PREFIX}{batch_id}__"
+
+
+def wait_for_marker(actor: str, marker_date: int, timeout_s: int = 600, poll_s: float = 0.25) -> Optional[float]:
+    start = time.time()
+    deadline = start + timeout_s
+    while time.time() < deadline:
+        try:
+            conn = get_db_conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM top_actors
+                        WHERE event_date = %s AND source_actor = %s
+                        LIMIT 1;
+                        """,
+                        (int(marker_date), actor),
+                    )
+                    if cur.fetchone() is not None:
+                        return time.time() - start
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        time.sleep(poll_s)
+    return None
+
+
+def measure_baseline_full_recompute() -> Dict[str, float]:
+    """measure the time of full recompute-style queries (without materializing results).
+
+    uses COUNT(*) wrappers so postgres must execute the full GROUP BY, but we don't fetch huge result sets.
+    """
+    queries = {
+        "daily_event_volume_by_quadclass": """
+            SELECT COUNT(*) FROM (
+              SELECT event_date, quad_class,
+                     SUM(num_events)::bigint AS total_events,
+                     SUM(num_articles)::bigint AS total_articles,
+                     AVG(goldstein) AS avg_goldstein
+              FROM gdelt_events
+              GROUP BY event_date, quad_class
+            ) t;
+        """,
+        "top_actors": """
+            SELECT COUNT(*) FROM (
+              SELECT event_date, source_actor,
+                     SUM(num_events)::bigint AS total_events,
+                     SUM(num_articles)::bigint AS total_articles,
+                     AVG(goldstein) AS avg_goldstein
+              FROM gdelt_events
+              GROUP BY event_date, source_actor
+            ) t;
+        """,
+        "daily_cameo_metrics": """
+            SELECT COUNT(*) FROM (
+              SELECT event_date, cameo_code,
+                     SUM(num_events)::bigint AS total_events,
+                     SUM(num_articles)::bigint AS total_articles,
+                     AVG(goldstein) AS avg_goldstein
+              FROM gdelt_events
+              GROUP BY event_date, cameo_code
+            ) t;
+        """,
+        "dyad_interactions": """
+            SELECT COUNT(*) FROM (
+              SELECT event_date, source_actor, target_actor,
+                     SUM(num_events)::bigint AS total_events,
+                     AVG(goldstein) AS avg_goldstein
+              FROM gdelt_events
+              GROUP BY event_date, source_actor, target_actor
+            ) t;
+        """,
+    }
+
+    out: Dict[str, float] = {}
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            for name, sql in queries.items():
+                t0 = time.time()
+                cur.execute(sql)
+                cur.fetchone()
+                out[name] = time.time() - t0
+    finally:
+        conn.close()
+
+    out["total"] = sum(out.values())
+    return out
+
+
+def compute_correctness_summary(dates: list[int], topk: int = 20) -> Dict[str, Any]:
+    """lightweight correctness checks comparing sinks to source recompute for a few impacted dates."""
+    conn = get_db_conn()
+    try:
+        with conn.cursor() as cur:
+            # totals per day (events + articles)
+            cur.execute(
+                """
+                SELECT event_date,
+                       COALESCE(SUM(num_events),0)::bigint AS src_events,
+                       COALESCE(SUM(num_articles),0)::bigint AS src_articles
+                FROM gdelt_events
+                WHERE event_date = ANY(%s)
+                GROUP BY event_date
+                ORDER BY event_date;
+                """,
+                (dates,),
+            )
+            src_totals = pd.DataFrame(cur.fetchall(), columns=["event_date", "src_events", "src_articles"])
+
+            cur.execute(
+                """
+                SELECT event_date,
+                       COALESCE(SUM(total_events),0)::bigint AS sink_events,
+                       COALESCE(SUM(total_articles),0)::bigint AS sink_articles
+                FROM daily_event_volume_by_quadclass
+                WHERE event_date = ANY(%s)
+                GROUP BY event_date
+                ORDER BY event_date;
+                """,
+                (dates,),
+            )
+            sink_totals = pd.DataFrame(cur.fetchall(), columns=["event_date", "sink_events", "sink_articles"])
+
+            totals = src_totals.merge(sink_totals, on="event_date", how="outer").fillna(0)
+            totals["abs_events_diff"] = (totals["src_events"] - totals["sink_events"]).abs()
+            totals["abs_articles_diff"] = (totals["src_articles"] - totals["sink_articles"]).abs()
+
+            # quadclass per day max diff across 4 buckets
+            cur.execute(
+                """
+                SELECT event_date, quad_class, COALESCE(SUM(num_events),0)::bigint AS src_events
+                FROM gdelt_events
+                WHERE event_date = ANY(%s)
+                GROUP BY event_date, quad_class;
+                """,
+                (dates,),
+            )
+            src_q = pd.DataFrame(cur.fetchall(), columns=["event_date", "quad_class", "src_events"])
+
+            cur.execute(
+                """
+                SELECT event_date, quad_class, COALESCE(SUM(total_events),0)::bigint AS sink_events
+                FROM daily_event_volume_by_quadclass
+                WHERE event_date = ANY(%s)
+                GROUP BY event_date, quad_class;
+                """,
+                (dates,),
+            )
+            sink_q = pd.DataFrame(cur.fetchall(), columns=["event_date", "quad_class", "sink_events"])
+
+            quad = src_q.merge(sink_q, on=["event_date", "quad_class"], how="outer").fillna(0)
+            quad["abs_diff"] = (quad["src_events"] - quad["sink_events"]).abs()
+
+            # top-k cameo match (per date)
+            cameo_rows = []
+            actor_rows = []
+            for d in dates:
+                cur.execute(
+                    """
+                    SELECT cameo_code
+                    FROM (
+                      SELECT cameo_code, SUM(num_events)::bigint AS total_events
+                      FROM gdelt_events
+                      WHERE event_date=%s AND cameo_code IS NOT NULL
+                      GROUP BY cameo_code
+                      ORDER BY total_events DESC, cameo_code ASC
+                      LIMIT %s
+                    ) t;
+                    """,
+                    (int(d), int(topk)),
+                )
+                base_cameo = [r[0] for r in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT cameo_code
+                    FROM (
+                      SELECT cameo_code, SUM(total_events)::bigint AS total_events
+                      FROM daily_cameo_metrics
+                      WHERE event_date=%s AND cameo_code IS NOT NULL
+                      GROUP BY cameo_code
+                      ORDER BY total_events DESC, cameo_code ASC
+                      LIMIT %s
+                    ) t;
+                    """,
+                    (int(d), int(topk)),
+                )
+                sink_cameo = [r[0] for r in cur.fetchall()]
+                inter = len(set(base_cameo).intersection(set(sink_cameo)))
+                cameo_rows.append({"event_date": d, "topk": topk, "match": inter, "match_rate": inter / topk if topk else None})
+
+                # top-k actors match (exclude batch markers)
+                cur.execute(
+                    """
+                    SELECT source_actor
+                    FROM (
+                      SELECT source_actor, SUM(num_events)::bigint AS total_events
+                      FROM gdelt_events
+                      WHERE event_date=%s
+                        AND source_actor IS NOT NULL
+                        AND source_actor NOT LIKE %s
+                      GROUP BY source_actor
+                      ORDER BY total_events DESC, source_actor ASC
+                      LIMIT %s
+                    ) t;
+                    """,
+                    (int(d), f"{MARKER_PREFIX}%", int(topk)),
+                )
+                base_actor = [r[0] for r in cur.fetchall()]
+
+                cur.execute(
+                    """
+                    SELECT source_actor
+                    FROM (
+                      SELECT source_actor, SUM(total_events)::bigint AS total_events
+                      FROM top_actors
+                      WHERE event_date=%s
+                        AND source_actor IS NOT NULL
+                        AND source_actor NOT LIKE %s
+                      GROUP BY source_actor
+                      ORDER BY total_events DESC, source_actor ASC
+                      LIMIT %s
+                    ) t;
+                    """,
+                    (int(d), f"{MARKER_PREFIX}%", int(topk)),
+                )
+                sink_actor = [r[0] for r in cur.fetchall()]
+                inter_a = len(set(base_actor).intersection(set(sink_actor)))
+                actor_rows.append({"event_date": d, "topk": topk, "match": inter_a, "match_rate": inter_a / topk if topk else None})
+
+    finally:
+        conn.close()
+
+    return {
+        "totals": totals,
+        "quad": quad,
+        "cameo_topk": pd.DataFrame(cameo_rows),
+        "actor_topk": pd.DataFrame(actor_rows),
+    }
+
+
 # ----------------------------
 # LISTEN/NOTIFY
 # ----------------------------
@@ -274,6 +524,9 @@ if "last_operation" not in st.session_state:
 if "last_throughput" not in st.session_state:
     st.session_state.last_throughput = None
 
+if "last_benchmark" not in st.session_state:
+    st.session_state.last_benchmark = None
+
 
 # ----------------------------
 # META: MIN/MAX DATES
@@ -284,8 +537,17 @@ meta = qdf("""
     FROM daily_event_volume_by_quadclass;
 """)
 
+using_sink_meta = True
 if meta.empty or pd.isna(meta.loc[0, "min_event_date"]) or pd.isna(meta.loc[0, "max_event_date"]):
-    st.error("No data found in daily_event_volume_by_quadclass. Your Flink aggregation tables look empty.")
+    using_sink_meta = False
+    meta = qdf("""
+        SELECT MIN(event_date) AS min_event_date,
+               MAX(event_date) AS max_event_date
+        FROM gdelt_events;
+    """)
+
+if meta.empty or pd.isna(meta.loc[0, "min_event_date"]) or pd.isna(meta.loc[0, "max_event_date"]):
+    st.error("No data found in gdelt_events. load data first (bulk load) and then start the flink pipeline.")
     st.stop()
 
 min_date_int = int(meta.loc[0, "min_event_date"])
@@ -328,123 +590,114 @@ with st.sidebar:
     poll_seconds = st.slider("Fallback poll (seconds)", 10, 120, 30)
 
     st.markdown("---")
-    st.markdown("## Benchmark controls")
+    st.markdown("## batch + benchmark")
 
-    # REPLACED INSERT: bulk load COPY
-    ins_lines = st.number_input("Insert lines", min_value=1000, max_value=5_000_000, value=20000, step=1000)
-    ins_file = st.text_input("Input file", value="data/GDELT.MASTERREDUCEDV2.TXT")
+    ins_n = st.number_input("delta inserts", min_value=0, max_value=5_000_000, value=20000, step=1000)
+    upd_n = st.number_input("delta updates", min_value=0, max_value=5_000_000, value=50, step=10)
+    del_n = st.number_input("delta deletes", min_value=0, max_value=5_000_000, value=20, step=10)
 
-    if st.button("Insert", use_container_width=True):
-        start_time = time.time()
-        with st.spinner("Running bulk load..."):
+    late = st.toggle("late arrivals", value=False)
+    late_date = None
+    if late:
+        late_date = st.selectbox("late date", options=[19790101, 19800101, 19900101, 20010101, 20150101], index=0)
+
+    topk = st.slider("top-k (match rate)", 5, 100, 20)
+    run_baseline = st.toggle("run baseline recompute (slow)", value=True)
+
+    if st.button("run batch", use_container_width=True, type="primary"):
+        batch_id = uuid4().hex[:12]
+        marker = marker_actor(batch_id)
+        # keep batches inside the current dataset range (default: latest date in filters)
+        mdate = int_yyyymmdd(end_d)
+
+        cmd = [sys.executable, "scripts/simulate-changes.py"]
+        if ins_n:
+            cmd += ["--insert", str(int(ins_n))]
+        if upd_n:
+            cmd += ["--update", str(int(upd_n))]
+        if del_n:
+            cmd += ["--delete", str(int(del_n))]
+        if late:
+            cmd += ["--late", "--late-date", str(int(late_date))]
+        cmd += ["--base-date", str(mdate)]
+        cmd += ["--marker", marker, "--marker-date", str(mdate)]
+
+        t0 = time.time()
+        with st.spinner("applying batch changes..."):
             try:
-                subprocess.run(
-                    ["bash", "-lc", f"SMALL_LOAD_LINES={int(ins_lines)} ./scripts/setup/load-gdelt-copy.sh {ins_file}"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    env=os.environ.copy(),
-                )
+                r = subprocess.run(cmd, check=True, capture_output=True, text=True)
             except subprocess.CalledProcessError as e:
-                st.error("Insert (bulk load) failed.")
+                st.error("batch workload failed")
                 st.code((e.stdout or "")[:5000])
                 st.code((e.stderr or "")[:5000])
                 st.stop()
 
-        # wait for NOTIFY (or timeout)
-        deadline = time.time() + 600
-        got = False
-        while time.time() < deadline:
-            if check_notifications():
-                got = True
-                break
-            time.sleep(0.2)
+        apply_s = time.time() - t0
 
-        elapsed = time.time() - start_time
-        st.session_state.processing_time = elapsed
-        st.session_state.last_batch_size = int(ins_lines)
-        st.session_state.last_operation = "INSERT_BULK_COPY"
-        st.session_state.last_throughput = (int(ins_lines) / elapsed) if elapsed > 0 else None
+        with st.spinner("waiting for flink to catch up..."):
+            wait_s = wait_for_marker(marker, mdate, timeout_s=900, poll_s=0.25)
 
-        if not got:
-            st.warning("Bulk load finished, but no NOTIFY arrived within timeout. Aggregations may still be catching up.")
+        incremental_total_s = None
+        if wait_s is not None:
+            incremental_total_s = apply_s + wait_s
+        else:
+            st.warning("timed out waiting for flink to process the batch marker. is the pipeline job running?")
 
-        # force a data refresh next render cycle
-        st.session_state.data_version += 1
-        st.session_state.last_refresh_time = datetime.now()
+        baseline = None
+        if run_baseline:
+            with st.spinner("running baseline full recompute queries (this can be slow)..."):
+                baseline = measure_baseline_full_recompute()
 
-    upd_n = st.number_input("Update rows", min_value=10, max_value=5_000_000, value=50, step=10)
-    if st.button("Update", use_container_width=True):
-        start_time = time.time()
-        with st.spinner("Running update workload..."):
-            try:
-                subprocess.run(
-                    ["python3", "scripts/simulate-changes.py", "--update", str(int(upd_n))],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as e:
-                st.error("Update failed.")
-                st.code((e.stdout or "")[:5000])
-                st.code((e.stderr or "")[:5000])
-                st.stop()
+        impacted_dates = [mdate]
+        if late and late_date is not None:
+            impacted_dates.append(int(late_date))
 
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            if check_notifications():
-                break
-            time.sleep(0.2)
+        with st.spinner("checking correctness (impacted dates only)..."):
+            correctness = compute_correctness_summary(impacted_dates, topk=int(topk))
 
-        elapsed = time.time() - start_time
-        st.session_state.processing_time = elapsed
-        st.session_state.last_batch_size = int(upd_n)
-        st.session_state.last_operation = "UPDATE"
-        st.session_state.last_throughput = (int(upd_n) / elapsed) if elapsed > 0 else None
-        st.session_state.data_version += 1
-        st.session_state.last_refresh_time = datetime.now()
+        baseline_total_s = float(baseline["total"]) if baseline is not None else None
+        speedup = None
+        if baseline_total_s is not None and incremental_total_s is not None and incremental_total_s > 0:
+            speedup = baseline_total_s / incremental_total_s
 
-    del_n = st.number_input("Delete rows", min_value=10, max_value=5_000_000, value=20, step=10)
-    if st.button("Delete", use_container_width=True):
-        start_time = time.time()
-        with st.spinner("Running delete workload..."):
-            try:
-                subprocess.run(
-                    ["python3", "scripts/simulate-changes.py", "--delete", str(int(del_n))],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as e:
-                st.error("Delete failed.")
-                st.code((e.stdout or "")[:5000])
-                st.code((e.stderr or "")[:5000])
-                st.stop()
+        st.session_state.last_benchmark = {
+            "batch_id": batch_id,
+            "marker": marker,
+            "marker_date": mdate,
+            "impacted_dates": impacted_dates,
+            "inputs": {"insert": int(ins_n), "update": int(upd_n), "delete": int(del_n), "late": bool(late), "late_date": late_date},
+            "apply_s": apply_s,
+            "catchup_s": wait_s,
+            "incremental_total_s": incremental_total_s,
+            "baseline": baseline,
+            "baseline_total_s": baseline_total_s,
+            "speedup": speedup,
+            "correctness": correctness,
+            "ran_at": datetime.now().isoformat(timespec="seconds"),
+            "stdout": (r.stdout or "")[:5000],
+        }
 
-        deadline = time.time() + 300
-        while time.time() < deadline:
-            if check_notifications():
-                break
-            time.sleep(0.2)
+        # keep the existing KPI card behavior
+        if incremental_total_s is not None:
+            st.session_state.processing_time = incremental_total_s
+            st.session_state.last_batch_size = int(ins_n + upd_n + del_n)
+            st.session_state.last_operation = "BATCH"
+            tp = (int(ins_n + upd_n + del_n) / incremental_total_s) if incremental_total_s > 0 else None
+            st.session_state.last_throughput = tp
 
-        elapsed = time.time() - start_time
-        st.session_state.processing_time = elapsed
-        st.session_state.last_batch_size = int(del_n)
-        st.session_state.last_operation = "DELETE"
-        st.session_state.last_throughput = (int(del_n) / elapsed) if elapsed > 0 else None
         st.session_state.data_version += 1
         st.session_state.last_refresh_time = datetime.now()
 
     st.markdown("---")
-    if st.session_state.processing_time is not None:
-        tp = st.session_state.last_throughput
-        tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
-        st.info(
-            f"Last op: {st.session_state.last_operation}\n\n"
-            f"Batch size: {st.session_state.last_batch_size:,}\n\n"
-            f"Processing time: {st.session_state.processing_time:.2f}s\n\n"
-            f"Throughput: {tp_txt}"
-        )
+    if st.session_state.last_benchmark is not None:
+        lb = st.session_state.last_benchmark
+        inc = lb.get("incremental_total_s")
+        base = lb.get("baseline_total_s")
+        sp = lb.get("speedup")
+        inc_txt = f"{inc:.2f}s" if inc is not None else "—"
+        base_txt = f"{base:.2f}s" if base is not None else "—"
+        sp_txt = f"{sp:.2f}x" if sp is not None else "—"
+        st.info(f"last batch: {lb.get('batch_id')}\n\ninc: {inc_txt} | baseline: {base_txt} | speedup: {sp_txt}")
 
 start_int = int_yyyymmdd(start_d)
 end_int = int_yyyymmdd(end_d)
@@ -605,6 +858,146 @@ def kpi_card(label: str, value: str, hint: str):
         """,
         unsafe_allow_html=True
     )
+
+
+# ----------------------------
+# BENCHMARK + ADMIN VIEWS
+# ----------------------------
+def render_benchmarks_tab(start_i: int, end_i: int):
+    st.subheader("benchmarks")
+
+    lb = st.session_state.last_benchmark
+    if lb is None:
+        st.info("run a batch from the sidebar to populate benchmark results.")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        inc = lb.get("incremental_total_s")
+        base = lb.get("baseline_total_s")
+        sp = lb.get("speedup")
+        with c1:
+            st.metric("batch id", lb.get("batch_id", "—"))
+        with c2:
+            st.metric("incremental catch-up", f"{inc:.2f}s" if inc is not None else "—")
+        with c3:
+            st.metric("baseline recompute", f"{base:.2f}s" if base is not None else "—")
+        with c4:
+            st.metric("speedup", f"{sp:.2f}x" if sp is not None else "—")
+
+        st.caption(f"ran at: {lb.get('ran_at','—')} • impacted dates: {', '.join(map(str, lb.get('impacted_dates', [])))}")
+
+        b = lb.get("baseline") or {}
+        if b:
+            st.markdown("#### baseline breakdown")
+            dfb = pd.DataFrame([{k: v for k, v in b.items() if k != "total"}]).T.reset_index()
+            dfb.columns = ["view", "seconds"]
+            dfb = dfb.sort_values("seconds", ascending=False)
+            st.dataframe(dfb, use_container_width=True)
+
+        corr = lb.get("correctness")
+        if corr is not None:
+            st.markdown("#### correctness summary (impacted dates only)")
+            totals = corr.get("totals")
+            quad = corr.get("quad")
+            cameo_topk = corr.get("cameo_topk")
+            actor_topk = corr.get("actor_topk")
+            if isinstance(totals, pd.DataFrame) and not totals.empty:
+                st.markdown("**totals**")
+                st.dataframe(totals, use_container_width=True)
+            if isinstance(quad, pd.DataFrame) and not quad.empty:
+                st.markdown("**quad_class diffs**")
+                st.dataframe(quad.sort_values(["event_date", "quad_class"]), use_container_width=True)
+            if isinstance(cameo_topk, pd.DataFrame) and not cameo_topk.empty:
+                st.markdown("**top-k match rate: cameo**")
+                st.dataframe(cameo_topk, use_container_width=True)
+            if isinstance(actor_topk, pd.DataFrame) and not actor_topk.empty:
+                st.markdown("**top-k match rate: actors**")
+                st.dataframe(actor_topk, use_container_width=True)
+
+        with st.expander("batch logs"):
+            st.code(lb.get("stdout", ""))
+
+    st.markdown("---")
+    st.subheader("baseline vs incremental (current filters)")
+    mode = st.radio("mode", ["incremental (sinks)", "baseline (recompute)"], horizontal=True)
+
+    def _time_df(sql: str, params: dict) -> tuple[pd.DataFrame, float]:
+        t0 = time.time()
+        df = qdf(sql, params=params)
+        return df, time.time() - t0
+
+    if mode.startswith("incremental"):
+        df, t_s = _time_df(
+            """
+            SELECT
+              SUM(total_events) AS total_events,
+              SUM(CASE WHEN quad_class IN (3,4) THEN total_events ELSE 0 END) AS conflict_events,
+              AVG(avg_goldstein) AS mean_goldstein
+            FROM daily_event_volume_by_quadclass
+            WHERE event_date BETWEEN %(s)s AND %(e)s;
+            """,
+            {"s": start_i, "e": end_i},
+        )
+        st.metric("query time", f"{t_s:.3f}s")
+        st.dataframe(df, use_container_width=True)
+    else:
+        df, t_s = _time_df(
+            """
+            SELECT
+              COALESCE(SUM(num_events),0)::BIGINT AS total_events,
+              COALESCE(SUM(CASE WHEN quad_class IN (3,4) THEN num_events ELSE 0 END),0)::BIGINT AS conflict_events,
+              AVG(goldstein) AS mean_goldstein
+            FROM gdelt_events
+            WHERE event_date BETWEEN %(s)s AND %(e)s;
+            """,
+            {"s": start_i, "e": end_i},
+        )
+        st.metric("query time", f"{t_s:.3f}s")
+        st.dataframe(df, use_container_width=True)
+
+
+def render_admin_tab():
+    st.subheader("admin")
+    st.markdown("this is intentionally separate. the dashboard is not your loader.")
+
+    st.markdown("#### initial bulk load (one-time)")
+    st.info(
+        "recommended: do the bulk load from cli, then start the flink pipeline. "
+        "this keeps benchmarks honest (avoids streamlit overhead)."
+    )
+    st.code(
+        """
+./scripts/setup/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+./scripts/setup/start-flink-aggregations.sh
+        """.strip()
+    )
+
+    with st.expander("run bulk load from here (danger)"):
+        file_path = st.text_input("file path", value="data/GDELT.MASTERREDUCEDV2.TXT")
+        small_lines = st.number_input("SMALL_LOAD_LINES (optional)", min_value=0, max_value=500_000_000, value=0, step=100000)
+        confirm = st.checkbox("i understand this truncates gdelt_events", value=False)
+        if st.button("run bulk load", disabled=not confirm):
+            env = os.environ.copy()
+            if int(small_lines) > 0:
+                env["SMALL_LOAD_LINES"] = str(int(small_lines))
+            else:
+                env.pop("SMALL_LOAD_LINES", None)
+            with st.spinner("running bulk load script..."):
+                try:
+                    r = subprocess.run(
+                        ["bash", "./scripts/setup/load-gdelt-copy.sh", file_path],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                except subprocess.CalledProcessError as e:
+                    st.error("bulk load failed")
+                    st.code((e.stdout or "")[:5000])
+                    st.code((e.stderr or "")[:5000])
+                    return
+            st.success("bulk load complete. start flink jobs next.")
+            with st.expander("loader output"):
+                st.code((r.stdout or "")[:10000])
 
 
 # ----------------------------
@@ -862,8 +1255,14 @@ if hasattr(st, "fragment"):
             return
         maybe_bump_version_from_live_checks()
 
-    live_tick()
-    render_dashboard()
+    tab_dash, tab_bench, tab_admin = st.tabs(["dashboard", "benchmarks", "admin"])
+    with tab_dash:
+        live_tick()
+        render_dashboard()
+    with tab_bench:
+        render_benchmarks_tab(start_int, end_int)
+    with tab_admin:
+        render_admin_tab()
 
 else:
     # Fallback (older Streamlit): you cannot avoid full reruns without fragments.
@@ -969,6 +1368,11 @@ else:
     with tab3:
         st.subheader("CAMEO")
         st.dataframe(cameo, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    render_benchmarks_tab(start_int, end_int)
+    st.markdown("---")
+    render_admin_tab()
 
     if live_refresh:
         time.sleep(refresh_seconds)

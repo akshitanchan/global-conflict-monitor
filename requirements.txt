@@ -1,3 +1,4 @@
+psycopg2==2.9.9
 psycopg2-binary==2.9.9
 pandas==2.2.3
 streamlit==1.53.0
