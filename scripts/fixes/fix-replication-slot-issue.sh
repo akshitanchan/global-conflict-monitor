@@ -1,64 +1,85 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "=== Fixing Replication Slot Issue ==="
+echo "=== fixing replication slot / cdc issues ==="
 echo ""
 
-# 1. Find active slot PID
-echo "1. Checking active slot..."
-ACTIVE_PID=$(docker exec gdelt-postgres psql -U flink_user -d gdelt -t -c "SELECT active_pid FROM pg_replication_slots WHERE slot_name='gdelt_flink_slot';" | tr -d ' ')
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
 
-if [ -n "$ACTIVE_PID" ] && [ "$ACTIVE_PID" != "" ]; then
-    echo "   Found active PID: $ACTIVE_PID"
-    
-    # Terminate it
-    echo "2. Terminating PID $ACTIVE_PID..."
-    docker exec gdelt-postgres psql -U flink_user -d gdelt -c "SELECT pg_terminate_backend($ACTIVE_PID);" >/dev/null
-    sleep 2
-fi
-
-# 3. Reset CDC
-echo "3. Resetting CDC (dropping slot and publication)..."
-./scripts/reset-cdc.sh
-
-# 4. Cancel Flink jobs
-echo "4. Cancelling all Flink jobs..."
-curl -s http://localhost:8081/jobs | grep -o '"id":"[^"]*"' | cut -d'"' -f4 | while read job_id; do
-  curl -s -X PATCH "http://localhost:8081/jobs/${job_id}?mode=cancel" >/dev/null
-  sleep 1
-done
-
-sleep 5
-
-# 5. Restart Flink
-echo "5. Restarting Flink containers..."
-docker-compose restart jobmanager taskmanager >/dev/null 2>&1
-echo "   Waiting 30 seconds for restart..."
-sleep 30
-
-# 6. Verify clean state
-echo "6. Verifying clean state..."
-SLOTS=$(docker exec gdelt-postgres psql -U flink_user -d gdelt -t -c "SELECT COUNT(*) FROM pg_replication_slots;" | tr -d ' ')
-echo "   Replication slots: $SLOTS (should be 0)"
-
-# 7. Start jobs
-echo "7. Starting Flink aggregation pipeline..."
-./scripts/start-flink-aggregations.sh
-
-echo ""
-echo "8. Waiting 10 seconds for jobs to start..."
-sleep 10
-
-# 9. Check status
-RUNNING=$(curl -s http://localhost:8081/jobs | grep -o '"status":"RUNNING"' | wc -l)
-echo ""
-echo "=== Status Check ==="
-echo "Running jobs: $RUNNING (should be 4)"
-
-if [ "$RUNNING" -eq 4 ]; then
-    echo "✅ SUCCESS! All 4 jobs running!"
-    echo ""
-    echo "Verify in Web UI: http://localhost:8081"
+if command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE_CMD="docker-compose"
 else
-    echo "❌ Issue persists. Check Flink Web UI for errors."
-    echo "   http://localhost:8081"
+  COMPOSE_CMD="docker compose"
 fi
+
+FLINK_BASE="${FLINK_BASE:-http://localhost:8081}"
+
+ok()   { echo "[ok] $*"; }
+warn() { echo "[warn] $*" >&2; }
+
+cancel_flink_jobs() {
+  local overview
+  overview="$(curl -fsS "$FLINK_BASE/jobs/overview" 2>/dev/null || true)"
+  [[ -n "$overview" ]] || { warn "flink rest api not reachable at $FLINK_BASE (skipping job cancellation)"; return 0; }
+
+  local jids
+  jids="$(python3 - <<'PY' <<<"$overview" 2>/dev/null || true
+import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+jobs=d.get("jobs") or []
+for j in jobs:
+    jid=j.get("jid")
+    state=j.get("state")
+    if jid and state in {"RUNNING","CREATED","RESTARTING","FAILING"}:
+        print(jid)
+PY
+)"
+
+  if [[ -z "$jids" ]]; then
+    ok "no running flink jobs found"
+    return 0
+  fi
+
+  echo "[step] cancelling flink jobs"
+  while read -r jid; do
+    [[ -n "$jid" ]] || continue
+    echo "  - cancelling $jid"
+    curl -fsS -X PATCH "$FLINK_BASE/jobs/${jid}?mode=cancel" >/dev/null 2>&1 || true
+  done <<<"$jids"
+}
+
+echo "1) cancelling flink jobs (best-effort)"
+cancel_flink_jobs
+
+echo "2) stopping flink containers"
+$COMPOSE_CMD -f "$COMPOSE_FILE" stop jobmanager taskmanager >/dev/null 2>&1 || true
+
+echo "3) resetting cdc (drop slot + publication)"
+"$ROOT_DIR/scripts/fixes/reset-cdc.sh" >/dev/null
+ok "cdc reset complete"
+
+echo "4) restarting services"
+$COMPOSE_CMD -f "$COMPOSE_FILE" up -d >/dev/null
+
+echo "5) starting flink pipeline"
+"$ROOT_DIR/scripts/setup/start-flink-aggregations.sh"
+
+echo ""
+echo "6) status"
+if curl -fsS "$FLINK_BASE/jobs/overview" >/dev/null 2>&1; then
+  running="$(curl -fsS "$FLINK_BASE/jobs/overview" | python3 - <<'PY'
+import json,sys
+d=json.loads(sys.stdin.read() or "{}")
+jobs=d.get("jobs") or []
+print(sum(1 for j in jobs if j.get("state")=="RUNNING"))
+PY
+)"
+  echo "running jobs: ${running} (expected: >= 1)"
+else
+  warn "flink rest api not reachable at $FLINK_BASE"
+fi
+
+echo ""
+echo "open flink ui: http://localhost:8081"

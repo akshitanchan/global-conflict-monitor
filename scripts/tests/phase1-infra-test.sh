@@ -3,7 +3,7 @@ set -euo pipefail
 
 # root + compose
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
 
 if command -v docker-compose >/dev/null 2>&1; then
@@ -23,8 +23,8 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-flink_pass}"
 PUBLICATION_NAME="${PUBLICATION_NAME:-gdelt_flink_pub}"
 SLOT_NAME="${SLOT_NAME:-gdelt_flink_slot}"
 
-CDC_SQL_HOST_PATH="${CDC_SQL_HOST_PATH:-$ROOT_DIR/flink/sql/create-cdc-source.sql}"
-CDC_SQL_CONTAINER_PATH="${CDC_SQL_CONTAINER_PATH:-/opt/flink/sql/create-cdc-source.sql}"
+DDL_SQL_HOST_PATH="${DDL_SQL_HOST_PATH:-$ROOT_DIR/flink/sql/01-ddl.sql}"
+DDL_SQL_CONTAINER_PATH="${DDL_SQL_CONTAINER_PATH:-/opt/flink/sql/01-ddl.sql}"
 SMOKE_EVENT_ID="${SMOKE_EVENT_ID:-999999999}"
 
 # helpers
@@ -96,19 +96,19 @@ else
 fi
 
 echo "[check] flink sql cdc ddl file exists"
-ensure_file_exists "$CDC_SQL_HOST_PATH"
+ensure_file_exists "$DDL_SQL_HOST_PATH"
 
-echo "[flink] verifying sql file is mounted (container path: $CDC_SQL_CONTAINER_PATH)"
-if ! docker exec -i "$FLINK_JM_CONTAINER" bash -lc "test -f '$CDC_SQL_CONTAINER_PATH'"; then
-  echo "[error] flink container cannot see: $CDC_SQL_CONTAINER_PATH"
+echo "[flink] verifying sql file is mounted (container path: $DDL_SQL_CONTAINER_PATH)"
+if ! docker exec -i "$FLINK_JM_CONTAINER" bash -lc "test -f '$DDL_SQL_CONTAINER_PATH'"; then
+  echo "[error] flink container cannot see: $DDL_SQL_CONTAINER_PATH"
   echo "hint: ensure docker-compose mounts $ROOT_DIR/flink/sql -> /opt/flink/sql"
   exit 1
 fi
 echo "[ok] sql file mounted in flink container"
 
-echo "[flink] applying cdc source ddl in flink sql-client"
+echo "[flink] applying flink ddl (cdc source + jdbc sinks) in flink sql-client"
 docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
-  "/opt/flink/bin/sql-client.sh -f '$CDC_SQL_CONTAINER_PATH' >/tmp/sql_apply.log 2>&1 || (tail -n 200 /tmp/sql_apply.log && exit 1)"
+  "/opt/flink/bin/sql-client.sh -f '$DDL_SQL_CONTAINER_PATH' >/tmp/sql_apply.log 2>&1 || (tail -n 200 /tmp/sql_apply.log && exit 1)"
 
 echo "[ok] flink sql ddl applied"
 

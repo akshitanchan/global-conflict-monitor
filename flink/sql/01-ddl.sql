@@ -1,4 +1,16 @@
--- Flink SQL Setup for GDELT CDC Source Table
+-- flake: noqa
+-- ==============================================
+-- 01-ddl.sql
+--
+-- purpose:
+--   register the cdc source + jdbc sink tables in flink.
+--
+-- notes:
+--   - safe to re-run (uses IF NOT EXISTS)
+--   - this file should NOT start any streaming jobs
+-- ==============================================
+
+-- 1) cdc source
 
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,
@@ -37,6 +49,7 @@ CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     'decoding.plugin.name' = 'pgoutput',
     'changelog-mode' = 'all'
 );
+
 
 -- 2) jdbc sinks
 
@@ -107,58 +120,3 @@ CREATE TABLE IF NOT EXISTS daily_cameo_metrics_sink (
   'password' = 'flink_pass',
   'driver' = 'org.postgresql.Driver'
 );
-
-
--- 3) streaming aggregations as one job
-
-BEGIN STATEMENT SET;
-
--- daily_event_volume_by_quadclass
-INSERT INTO daily_event_volume_by_quadclass_sink
-SELECT
-  event_date,
-  quad_class,
-  SUM(CAST(num_events AS BIGINT)) AS total_events,
-  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
-  AVG(goldstein) AS avg_goldstein,
-  CURRENT_TIMESTAMP AS last_updated
-FROM gdelt_cdc_source
-GROUP BY event_date, quad_class;
-
--- dyad_interactions
-INSERT INTO dyad_interactions_sink
-SELECT
-  event_date,
-  source_actor,
-  target_actor,
-  SUM(CAST(num_events AS BIGINT)) AS total_events,
-  AVG(goldstein) AS avg_goldstein,
-  CURRENT_TIMESTAMP AS last_updated
-FROM gdelt_cdc_source
-GROUP BY event_date, source_actor, target_actor;
-
--- top actors
-INSERT INTO top_actors_sink
-SELECT
-  event_date,
-  source_actor,
-  SUM(CAST(num_events AS BIGINT)) AS total_events,
-  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
-  AVG(goldstein) AS avg_goldstein,
-  CURRENT_TIMESTAMP AS last_updated
-FROM gdelt_cdc_source
-GROUP BY event_date, source_actor;
-
--- cameo metrics (for top-k per day queries)
-INSERT INTO daily_cameo_metrics_sink
-SELECT
-  event_date,
-  cameo_code,
-  SUM(CAST(num_events AS BIGINT)) AS total_events,
-  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
-  AVG(goldstein) AS avg_goldstein,
-  CURRENT_TIMESTAMP AS last_updated
-FROM gdelt_cdc_source
-GROUP BY event_date, cameo_code;
-
-END;

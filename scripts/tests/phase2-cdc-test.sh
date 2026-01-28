@@ -3,7 +3,7 @@ set -euo pipefail
 
 # root + compose (match phase1 style)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
 
 if command -v docker-compose >/dev/null 2>&1; then
@@ -123,7 +123,9 @@ print(jobs[0].get("jid","") if jobs else "")
 
 if [[ "$job_state" == "NO_JOBS" ]]; then
   die "no flink jobs running. start the pipeline first:
-docker exec -it ${FLINK_JM_CONTAINER} ./bin/sql-client.sh -f /opt/flink/sql/00-run-pipeline.sql"
+./scripts/setup/start-flink-aggregations.sh
+or, manually:
+docker exec -it ${FLINK_JM_CONTAINER} ./bin/sql-client.sh -f /opt/flink/sql/02-pipeline.sql"
 fi
 [[ "$job_state" == "RUNNING" ]] || die "flink job not RUNNING (state=$job_state)"
 ok "flink job is RUNNING (jid=$job_jid)"

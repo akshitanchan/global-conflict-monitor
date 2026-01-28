@@ -98,34 +98,29 @@ docker compose ps
 ### 0) start containers
 ```bash
 ./setup.sh
-./scripts/phase1-infra-test.sh
+./scripts/tests/phase1-infra-test.sh
 ```
 
 ### 1) load data (tab-separated, header)
 Put your big file in `./data/` (docker mounts it into Postgres as `/data`), then run:
 ```bash
-./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+./scripts/setup/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
 ```
 
-### 2) create Flink JDBC sinks
-```bash
-./scripts/apply-flink-sinks.sh
-```
-
-### 3) start streaming incremental aggregations (keeps running)
+### 2) start streaming incremental aggregations (keeps running)
 Run in a separate terminal:
 ```bash
-./scripts/start-flink-aggregations.sh
+./scripts/setup/start-flink-aggregations.sh
 ```
 
-### 4) sanity check results in Postgres
+### 3) sanity check results in Postgres
 ```bash
 docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_event_volume_by_quadclass limit 5;"
 docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from top_actors order by total_events desc limit 10;"
 docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_cameo_metrics order by total_events desc limit 10;"
 ```
 
-### 5) simulate changes (inserts/updates/deletes + late arrivals)
+### 4) simulate changes (inserts/updates/deletes + late arrivals)
 Install python deps (locally):
 ```bash
 python -m venv .venv && source .venv/bin/activate

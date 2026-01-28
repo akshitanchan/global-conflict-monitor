@@ -184,7 +184,7 @@ wait_for_ready() {
 
 ensure_permissions() {
   chmod +x setup.sh 2>/dev/null || true
-  chmod +x scripts/*.sh 2>/dev/null || true
+  find scripts -type f -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
   chmod -R a+r flink/lib 2>/dev/null || true
   mkdir -p scripts flink/lib 2>/dev/null || true
 }

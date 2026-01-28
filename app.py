@@ -339,7 +339,7 @@ with st.sidebar:
         with st.spinner("Running bulk load..."):
             try:
                 subprocess.run(
-                    ["bash", "-lc", f"SMALL_LOAD_LINES={int(ins_lines)} ./scripts/load-gdelt-copy.sh {ins_file}"],
+                    ["bash", "-lc", f"SMALL_LOAD_LINES={int(ins_lines)} ./scripts/setup/load-gdelt-copy.sh {ins_file}"],
                     check=True,
                     capture_output=True,
                     text=True,
