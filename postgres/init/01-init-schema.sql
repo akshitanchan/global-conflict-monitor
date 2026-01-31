@@ -1,6 +1,5 @@
--- ==============================================
+
 -- Global Conflict Monitoring - Source Schema
--- ==============================================
 
 -- Source table (raw events)
 CREATE TABLE IF NOT EXISTS gdelt_events (
