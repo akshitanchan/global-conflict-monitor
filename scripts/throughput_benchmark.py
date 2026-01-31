@@ -85,54 +85,84 @@ def measure_postgres_aggregation(batch_size, columns):
     agg_start = time.time()
     
     aggregations = {
-    # 1) Daily event volume by QuadClass
-    'daily_event_volume_by_quadclass': """
-        SELECT
-            event_date,
-            quad_class,
-            SUM(CAST(num_events AS BIGINT)) AS total_events,
-            AVG(goldstein) AS avg_goldstein
-        FROM gdelt_events
-        GROUP BY event_date, quad_class;
-    """,
+        # 1) Daily event volume by QuadClass
+        'daily_event_volume_by_quadclass': """
+            SELECT
+                event_date,
+                quad_class,
+                SUM(CAST(num_events AS BIGINT)) AS total_events,
+                AVG(goldstein) AS avg_goldstein
+            FROM gdelt_events
+            GROUP BY event_date, quad_class;
+        """,
 
-    # 2) Dyadic interactions (source → target)
-    'dyad_interactions': """
-        SELECT
-            event_date,
-            source_actor,
-            target_actor,
-            SUM(CAST(num_events AS BIGINT)) AS total_events,
-            AVG(goldstein) AS avg_goldstein
-        FROM gdelt_events
-        WHERE source_actor IS NOT NULL
-          AND target_actor IS NOT NULL
-        GROUP BY event_date, source_actor, target_actor;
-    """,
+        # 2) Dyadic interactions (source → target)
+        'dyad_interactions': """
+            SELECT
+                event_date,
+                source_actor,
+                target_actor,
+                SUM(CAST(num_events AS BIGINT)) AS total_events,
+                AVG(goldstein) AS avg_goldstein
+            FROM gdelt_events
+            WHERE source_actor IS NOT NULL
+            AND target_actor IS NOT NULL
+            GROUP BY event_date, source_actor, target_actor;
+        """,
 
-    # 3) Top actors (source actor only)
-    'top_actors': """
-        SELECT
-            event_date,
-            source_actor,
-            SUM(CAST(num_events AS BIGINT)) AS total_events,
-            AVG(goldstein) AS avg_goldstein
-        FROM gdelt_events
-        WHERE source_actor IS NOT NULL
-        GROUP BY event_date, source_actor;
-    """,
+        # 3) Top actors (source actor only)
+        'top_actors': """
+            SELECT
+                event_date,
+                source_actor,
+                SUM(CAST(num_events AS BIGINT)) AS total_events,
+                AVG(goldstein) AS avg_goldstein
+            FROM gdelt_events
+            WHERE source_actor IS NOT NULL
+            GROUP BY event_date, source_actor;
+        """,
 
-    # 4) CAMEO metrics
-    'daily_cameo_metrics': """
-        SELECT
-            event_date,
-            cameo_code,
-            SUM(CAST(num_events AS BIGINT)) AS total_events,
-            AVG(goldstein) AS avg_goldstein
-        FROM gdelt_events
-        WHERE cameo_code IS NOT NULL
-        GROUP BY event_date, cameo_code;
-    """
+        # 4) CAMEO metrics
+        'daily_cameo_metrics': """
+            SELECT
+                event_date,
+                cameo_code,
+                SUM(CAST(num_events AS BIGINT)) AS total_events,
+                AVG(goldstein) AS avg_goldstein
+            FROM gdelt_events
+            WHERE cameo_code IS NOT NULL
+            GROUP BY event_date, cameo_code;
+        """
+    }
+
+    
+    agg_times = {}
+    for agg_name, query in aggregations.items():
+        agg_query_start = time.time()
+        cur.execute(query)
+        cur.fetchall()  # Ensure query completes
+        agg_time = time.time() - agg_query_start
+        agg_times[agg_name] = agg_time
+        print(f"  • {agg_name}: {agg_time:.2f}s")
+    
+    total_agg_time = time.time() - agg_start
+    total_time = insert_time + total_agg_time
+    
+    print(f"\n BASELINE RESULTS:")
+    print(f"  Insert time:      {insert_time:.2f}s")
+    print(f"  Aggregation time: {total_agg_time:.2f}s")
+    print(f"  Total time:       {total_time:.2f}s")
+    print(f"  Throughput:       {batch_size / total_time:,.0f} rows/sec")
+    
+    cur.close()
+    conn.close()
+    
+    return {
+        'insert_time': insert_time,
+        'aggregation_time': total_agg_time,
+        'total_time': total_time,
+        'throughput': batch_size / total_time,
+        'agg_times': agg_times
     }
 
 def measure_flink_incremental(batch_size, columns):
