@@ -21,71 +21,116 @@ print("=" * 70)
 # Baseline (raw table) — FIXED: use SUM(num_events) not COUNT(*)
 queries_baseline = [
     ("Daily Events", """
-        SELECT event_date, quad_class,
-               SUM(CAST(num_events AS BIGINT)) AS total_events,
-               AVG(goldstein) AS avg_goldstein
+        SELECT
+          event_date,
+          quad_class,
+          SUM(CAST(num_events AS BIGINT)) AS total_events,
+          AVG(goldstein) AS avg_goldstein
         FROM gdelt_events
         WHERE event_date BETWEEN 19790101 AND 20260131
         GROUP BY event_date, quad_class
     """),
 
-    ("Top Actor Pairs", """
-        SELECT source_actor, target_actor,
-               SUM(CAST(num_events AS BIGINT)) AS total_events
+    ("Top Actors", """
+        SELECT
+          source_actor,
+          SUM(CAST(num_events AS BIGINT)) AS total_events,
+          AVG(goldstein) AS avg_goldstein
+        FROM gdelt_events
+        WHERE event_date BETWEEN 19790101 AND 20260131
+          AND source_actor IS NOT NULL
+          AND char_length(source_actor) = 3
+        GROUP BY source_actor
+        ORDER BY total_events DESC
+        LIMIT 250
+    """),
+
+    ("Dyad Interactions", """
+        SELECT
+          source_actor,
+          target_actor,
+          SUM(CAST(num_events AS BIGINT)) AS total_events,
+          AVG(goldstein) AS avg_goldstein
         FROM gdelt_events
         WHERE event_date BETWEEN 19790101 AND 20260131
           AND source_actor IS NOT NULL
           AND target_actor IS NOT NULL
         GROUP BY source_actor, target_actor
-        ORDER BY 3 DESC
+        ORDER BY total_events DESC
         LIMIT 50
     """),
 
     ("CAMEO Codes", """
-        SELECT cameo_code,
-               SUM(CAST(num_events AS BIGINT)) AS total_events,
-               AVG(goldstein) AS avg_goldstein
+        SELECT
+          cameo_code,
+          SUM(CAST(num_events AS BIGINT)) AS total_events,
+          AVG(goldstein) AS avg_goldstein
         FROM gdelt_events
         WHERE event_date BETWEEN 19790101 AND 20260131
           AND cameo_code IS NOT NULL
         GROUP BY cameo_code
-        ORDER BY 2 DESC
+        ORDER BY total_events DESC
         LIMIT 50
     """)
 ]
 
+
 # "Flink" path = query the precomputed aggregate tables (stored in Postgres)
 queries_flink = [
     ("Daily Events", """
-        SELECT event_date, quad_class,
-               SUM(total_events) AS total_events,
-               AVG(avg_goldstein) AS avg_goldstein
+        SELECT
+          event_date,
+          quad_class,
+          SUM(total_events) AS total_events,
+          AVG(avg_goldstein) AS avg_goldstein
         FROM daily_event_volume_by_quadclass
         WHERE event_date BETWEEN 19790101 AND 20260131
         GROUP BY event_date, quad_class
     """),
 
-    ("Top Actor Pairs", """
-        SELECT source_actor, target_actor,
-               SUM(total_events) AS total_events
+    ("Top Actors", """
+        SELECT
+          source_actor,
+          SUM(total_events) AS total_events,
+          AVG(avg_goldstein) AS avg_goldstein
+        FROM top_actors
+        WHERE event_date BETWEEN 19790101 AND 20260131
+          AND source_actor IS NOT NULL
+          AND char_length(source_actor) = 3
+        GROUP BY source_actor
+        ORDER BY total_events DESC
+        LIMIT 250
+    """),
+
+    ("Dyad Interactions", """
+        SELECT
+          source_actor,
+          target_actor,
+          SUM(total_events) AS total_events,
+          AVG(avg_goldstein) AS avg_goldstein
         FROM dyad_interactions
         WHERE event_date BETWEEN 19790101 AND 20260131
+          AND source_actor IS NOT NULL
+          AND target_actor IS NOT NULL
         GROUP BY source_actor, target_actor
-        ORDER BY 3 DESC
+        ORDER BY total_events DESC
         LIMIT 50
     """),
 
     ("CAMEO Codes", """
-        SELECT cameo_code,
-               SUM(total_events) AS total_events,
-               AVG(avg_goldstein) AS avg_goldstein
+        SELECT
+          cameo_code,
+          SUM(total_events) AS total_events,
+          AVG(avg_goldstein) AS avg_goldstein
         FROM daily_cameo_metrics
         WHERE event_date BETWEEN 19790101 AND 20260131
+          AND cameo_code IS NOT NULL
         GROUP BY cameo_code
-        ORDER BY 2 DESC
+        ORDER BY total_events DESC
         LIMIT 50
     """)
 ]
+
 
 conn = psycopg2.connect(DB_URL)
 comparison_table = []
