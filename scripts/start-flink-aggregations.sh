@@ -6,3 +6,5 @@ docker exec -it flink-jobmanager bash -lc \
   "/opt/flink/bin/sql-client.sh \
      -i /opt/flink/sql/00-init.sql \
      -f /opt/flink/sql/02-run-aggregations.sql"
+
+    
