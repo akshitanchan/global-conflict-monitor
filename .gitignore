@@ -1,3 +1,16 @@
+# os junk
+.DS_Store
+._*
+.AppleDouble
+Thumbs.db
+ehthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+*~
+.nfs*
+
+# project
 .vagrant*
 bin
 docker/docker
@@ -7,7 +20,6 @@ a.out
 build_src
 .flymake*
 .idea
-.DS_Store
 docs/_build
 docs/_static
 docs/_templates
