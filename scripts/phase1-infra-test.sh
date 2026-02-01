@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# root + compose
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT_DIR/docker-compose.yml}"
@@ -12,7 +11,6 @@ else
   COMPOSE_CMD="docker compose"
 fi
 
-# config (override via env)
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gdelt-postgres}"
 FLINK_JM_CONTAINER="${FLINK_JM_CONTAINER:-flink-jobmanager}"
 
@@ -27,26 +25,34 @@ CDC_SQL_HOST_PATH="${CDC_SQL_HOST_PATH:-$ROOT_DIR/flink/sql/create-cdc-source.sq
 CDC_SQL_CONTAINER_PATH="${CDC_SQL_CONTAINER_PATH:-/opt/flink/sql/create-cdc-source.sql}"
 SMOKE_EVENT_ID="${SMOKE_EVENT_ID:-999999999}"
 
-# helpers
+# logging
+info() { echo "[info] $*"; }
+ok()   { echo "[ok]   $*"; }
+warn() { echo "[warn] $*" >&2; }
+die()  { echo "[error] $*" >&2; exit 1; }
+
+# sql command
 pg_exec() {
   docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
+# healthchecks
 wait_for_container_healthy() {
   local name="$1"
   local tries="${2:-60}"
   local i=0
-  echo "[wait] waiting for $name to be healthy..."
+  info "waiting for $name healthcheck..."
   while true; do
+    local status
     status="$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null || true)"
     if [[ "$status" == "healthy" ]]; then
-      echo "[wait] $name is healthy"
+      ok "$name is healthy"
       return 0
     fi
     i=$((i+1))
     if (( i >= tries )); then
-      echo "[error] $name not healthy after $tries checks"
+      warn "$name not healthy after $tries checks"
       docker logs "$name" --tail 200 || true
       exit 1
     fi
@@ -56,79 +62,72 @@ wait_for_container_healthy() {
 
 ensure_file_exists() {
   local path="$1"
-  if [[ ! -f "$path" ]]; then
-    echo "[error] missing file: $path"
-    exit 1
-  fi
+  [[ -f "$path" ]] || die "missing file: $path"
 }
 
-# bring up
-echo "[up] docker compose up -d"
+# bring stack up
+info "bringing up services"
 $COMPOSE_CMD -f "$COMPOSE_FILE" up -d
 
-# checks
 wait_for_container_healthy "$POSTGRES_CONTAINER" 90
 
-echo "[check] wal_level"
+# postgres logical wal
+info "checking wal_level"
 wal_level="$(pg_exec "show wal_level;")"
-if [[ "$wal_level" != "logical" ]]; then
-  echo "[error] wal_level is '$wal_level' (expected: logical)"
-  exit 1
-fi
-echo "[ok] wal_level=logical"
+[[ "$wal_level" == "logical" ]] || die "wal_level is '$wal_level' (expected: logical)"
+ok "wal_level=logical"
 
-echo "[check] replica identity"
+# emit old row values
+info "checking replica identity"
 replica_identity="$(pg_exec "select relreplident from pg_class where relname='gdelt_events';")"
-# 'f' means FULL, 'd' means DEFAULT. we want full to reliably emit old row values on updates/deletes.
 if [[ "$replica_identity" != "f" ]]; then
-  echo "[fix] setting replica identity full on gdelt_events"
+  info "setting replica identity full on public.gdelt_events"
   pg_exec "alter table public.gdelt_events replica identity full;"
 fi
-echo "[ok] replica identity full"
+ok "replica identity full"
 
-echo "[check] create publication if missing"
+# publication for table
+info "ensuring publication exists"
 pub_exists="$(pg_exec "select 1 from pg_publication where pubname='${PUBLICATION_NAME}' limit 1;")"
 if [[ -z "$pub_exists" ]]; then
   pg_exec "create publication ${PUBLICATION_NAME} for table public.gdelt_events;"
-  echo "[ok] publication created: $PUBLICATION_NAME"
+  ok "publication created: $PUBLICATION_NAME"
 else
-  echo "[ok] publication exists: $PUBLICATION_NAME"
+  ok "publication exists: $PUBLICATION_NAME"
 fi
 
-echo "[check] flink sql cdc ddl file exists"
+# ddl file on host
 ensure_file_exists "$CDC_SQL_HOST_PATH"
+ok "cdc ddl file present: $CDC_SQL_HOST_PATH"
 
-echo "[flink] verifying sql file is mounted (container path: $CDC_SQL_CONTAINER_PATH)"
+# mount into flink jm
+info "verifying sql file mount in flink jobmanager"
 if ! docker exec -i "$FLINK_JM_CONTAINER" bash -lc "test -f '$CDC_SQL_CONTAINER_PATH'"; then
-  echo "[error] flink container cannot see: $CDC_SQL_CONTAINER_PATH"
-  echo "hint: ensure docker-compose mounts $ROOT_DIR/flink/sql -> /opt/flink/sql"
-  exit 1
+  die "flink jobmanager cannot see $CDC_SQL_CONTAINER_PATH (check compose mounts $ROOT_DIR/flink/sql -> /opt/flink/sql)"
 fi
-echo "[ok] sql file mounted in flink container"
+ok "sql file mounted: $CDC_SQL_CONTAINER_PATH"
 
-echo "[flink] applying cdc source ddl in flink sql-client"
+# apply flink ddl
+info "applying cdc ddl via flink sql-client"
 docker exec -i "$FLINK_JM_CONTAINER" bash -lc \
   "/opt/flink/bin/sql-client.sh -f '$CDC_SQL_CONTAINER_PATH' >/tmp/sql_apply.log 2>&1 || (tail -n 200 /tmp/sql_apply.log && exit 1)"
+ok "flink ddl applied"
 
-echo "[ok] flink sql ddl applied"
-
-echo "[check] insert row into gdelt_events"
+# write smoke
+info "smoke write: insert/update/delete on public.gdelt_events"
 pg_exec "insert into public.gdelt_events (globaleventid, event_date, source_actor, target_actor, cameo_code, num_events, num_articles, quad_class, goldstein) values (${SMOKE_EVENT_ID}, to_char(current_date, 'YYYYMMDD')::int, 'USA', 'CHN', '043', 1, 4, 1, 2.8) on conflict (globaleventid) do update set goldstein = excluded.goldstein, num_events = excluded.num_events, num_articles = excluded.num_articles;"
-
-echo "[check] update row"
 pg_exec "update public.gdelt_events set goldstein = coalesce(goldstein, 0) + 1.0 where globaleventid = ${SMOKE_EVENT_ID};"
-
-echo "[check] delete row"
 pg_exec "delete from public.gdelt_events where globaleventid=${SMOKE_EVENT_ID};"
+ok "smoke write ok"
 
-echo "[check] replication slot status (created when flink connects)"
+# slot shows up later
+info "checking replication slot visibility (created when flink connects)"
 slot_row="$(pg_exec "select slot_name, active from pg_replication_slots where slot_name='${SLOT_NAME}';")"
 if [[ -z "$slot_row" ]]; then
-  echo "[warn] slot '${SLOT_NAME}' not visible yet."
-  echo "this can happen if the cdc job has not started reading. check flink ui and logs."
+  warn "slot '${SLOT_NAME}' not visible yet (cdc job may not be reading yet)"
 else
-  echo "[ok] slot: $slot_row"
+  ok "slot: $slot_row"
 fi
 
 echo
-echo "[done] infra looks good."
+ok "infra looks good"
