@@ -1,7 +1,4 @@
--- ==============================================
--- JDBC sink tables (PostgreSQL) - Phase 2
--- Run after create-cdc-source.sql
--- ==============================================
+-- JDBC sink tables (Postgres)
 
 CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass_sink (
   event_date INT,

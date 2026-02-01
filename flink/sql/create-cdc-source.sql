@@ -1,4 +1,5 @@
--- Create CDC source table (Flink SQL)
+-- CDC source table (Flink)
+
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,
 

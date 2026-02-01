@@ -1,16 +1,8 @@
--- ==============================================
--- Incremental aggregations (Flink maintains state)
---
--- IMPORTANT:
--- Run these 4 streaming INSERTs as ONE Flink job via a STATEMENT SET.
--- If you run them as 4 separate INSERT commands, Flink will start 4
--- independent Postgres CDC readers, which will fight over the same
--- replication slot/publication and eventually make jobs fail.
--- ==============================================
+-- Aggregation and insertion into sink tables (Flink SQL)
 
 BEGIN STATEMENT SET;
 
--- 1) daily_event_volume_by_quadclass
+-- daily_event_volume_by_quadclass
 INSERT INTO daily_event_volume_by_quadclass_sink
 SELECT
   event_date,
@@ -22,7 +14,7 @@ SELECT
 FROM gdelt_cdc_source
 GROUP BY event_date, quad_class;
 
--- 2) dyad_interactions
+-- dyad_interactions
 INSERT INTO dyad_interactions_sink
 SELECT
   event_date,
@@ -34,7 +26,7 @@ SELECT
 FROM gdelt_cdc_source
 GROUP BY event_date, source_actor, target_actor;
 
--- 3) top_actors (source actor)
+-- top_actors
 INSERT INTO top_actors_sink
 SELECT
   event_date,
@@ -46,7 +38,7 @@ SELECT
 FROM gdelt_cdc_source
 GROUP BY event_date, source_actor;
 
--- 4) cameo metrics
+-- cameo metrics
 INSERT INTO daily_cameo_metrics_sink
 SELECT
   event_date,

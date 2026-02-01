@@ -31,6 +31,6 @@ web.refresh-interval: 3000
 blob.server.port: 6124
 query.server.port: 6125
 
-# Optional: Logging
+# Logging
 taskmanager.logging.level: INFO
 jobmanager.logging.level: INFO

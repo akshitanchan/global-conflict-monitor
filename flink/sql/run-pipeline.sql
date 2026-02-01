@@ -1,29 +1,24 @@
--- Create CDC source table (Flink SQL)
+-- Flink SQL script to run the entire streaming pipeline
+
 CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     globaleventid BIGINT,
-
     event_date INT,
     source_actor STRING,
     target_actor STRING,
     cameo_code STRING,
-
     num_events INT,
     num_articles INT,
     quad_class INT,
     goldstein DOUBLE,
-
     source_geo_type INT,
     source_geo_lat DOUBLE,
     source_geo_long DOUBLE,
-
     target_geo_type INT,
     target_geo_lat DOUBLE,
     target_geo_long DOUBLE,
-
     action_geo_type INT,
     action_geo_lat DOUBLE,
     action_geo_long DOUBLE,
-
     PRIMARY KEY (globaleventid) NOT ENFORCED
 ) WITH (
     'connector' = 'postgres-cdc',
@@ -34,7 +29,6 @@ CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     'database-name' = 'gdelt',
     'schema-name' = 'public',
     'table-name' = 'gdelt_events',
-
     'scan.startup.mode' = 'initial',
     'slot.name' = 'gdelt_flink_slot',
     'debezium.publication.name' = 'gdelt_flink_pub',
@@ -43,10 +37,8 @@ CREATE TABLE IF NOT EXISTS gdelt_cdc_source (
     'decoding.plugin.name' = 'pgoutput',
     'changelog-mode' = 'all'
 );
--- ==============================================
--- JDBC sink tables (PostgreSQL) - Phase 2
--- Run after create-cdc-source.sql
--- ==============================================
+
+-- 2) JDBC sink tables (Postgres)
 
 CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass_sink (
   event_date INT,
@@ -116,3 +108,57 @@ CREATE TABLE IF NOT EXISTS daily_cameo_metrics_sink (
   'driver' = 'org.postgresql.Driver'
 );
 
+
+-- 3) Streaming aggregations and inserts into sink tables
+
+BEGIN STATEMENT SET;
+
+-- daily_event_volume_by_quadclass
+INSERT INTO daily_event_volume_by_quadclass_sink
+SELECT
+  event_date,
+  quad_class,
+  SUM(CAST(num_events AS BIGINT)) AS total_events,
+  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
+  AVG(goldstein) AS avg_goldstein,
+  CURRENT_TIMESTAMP AS last_updated
+FROM gdelt_cdc_source
+GROUP BY event_date, quad_class;
+
+-- dyad_interactions
+INSERT INTO dyad_interactions_sink
+SELECT
+  event_date,
+  source_actor,
+  target_actor,
+  SUM(CAST(num_events AS BIGINT)) AS total_events,
+  AVG(goldstein) AS avg_goldstein,
+  CURRENT_TIMESTAMP AS last_updated
+FROM gdelt_cdc_source
+GROUP BY event_date, source_actor, target_actor;
+
+-- top actors
+INSERT INTO top_actors_sink
+SELECT
+  event_date,
+  source_actor,
+  SUM(CAST(num_events AS BIGINT)) AS total_events,
+  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
+  AVG(goldstein) AS avg_goldstein,
+  CURRENT_TIMESTAMP AS last_updated
+FROM gdelt_cdc_source
+GROUP BY event_date, source_actor;
+
+-- cameo metrics
+INSERT INTO daily_cameo_metrics_sink
+SELECT
+  event_date,
+  cameo_code,
+  SUM(CAST(num_events AS BIGINT)) AS total_events,
+  SUM(CAST(num_articles AS BIGINT)) AS total_articles,
+  AVG(goldstein) AS avg_goldstein,
+  CURRENT_TIMESTAMP AS last_updated
+FROM gdelt_cdc_source
+GROUP BY event_date, cameo_code;
+
+END;
