@@ -1,6 +1,6 @@
 # GLOBAL CONFLICT MONITOR
 
-Real-time analytics dashboard using PostgreSQL CDC, Apache Flink, and Streamlit.
+Real-time analytics pipeline for GDELT event data using PostgreSQL Change Data Capture, Apache Flink stream processing, incremental materialized view maintenance and Streamlit.
 
 ## Architecture
 ```
@@ -25,131 +25,153 @@ Streamlit Dashboard
 
 ## Prerequisites
 
-### Required Software
+**macOS:**
+- Homebrew
+- Colima (Docker engine)
+- Docker CLI
+- Docker Compose
 
-1. **Colima** (Docker Engine for Mac)
-2. **Docker CLI**
-3. **Docker Compose**
+**Linux:**
+- Docker Engine
+- Docker Compose plugin
 
-### System Requirements
-
-**Supported Platforms**
-- **macOS:** Apple Silicon (M1–M4) or Intel
-- **Windows:** Windows 10/11 (64-bit)
-- **Linux:** Ubuntu 20.04+ (or equivalent), 64-bit
-
-**Hardware**
-- **RAM:** 8GB+ recommended
-- **CPU:** 4 cores+ recommended
-- **Disk:** 10GB+ free space recommended
-
-**Platform Notes**
-- **Windows:** WSL2 recommended
+**Windows:**
+- WSL2 (Ubuntu)
+- Docker Desktop with WSL2 integration
 
 ---
 
-## Setup Instructions
+## Quick Start
 
-### Step 1: Install Colima and Docker
+### Installation
+
+Run the automated setup script:
 ```bash
-# Install Colima (lightweight Docker engine)
-brew install colima
-
-# Install Docker CLI tools
-brew install docker
-
-# Verify installations
-colima --version
-docker --version
-docker compose version
+./setup.sh
 ```
 
-### Step 2: Start Colima
+This script will:
+- Detect the operating system
+- Install missing dependencies (macOS only)
+- Download required JAR files (Flink CDC connector, PostgreSQL JDBC driver)
+- Start Colima (macOS)
+- Launch all Docker containers
+- Wait for services to become healthy
+
+**Services started:**
+- PostgreSQL (port 5432) - Source and sink database
+- PostgreSQL Baseline (port 5433) - Comparison baseline
+- Flink JobManager (port 8081) - Cluster coordinator
+- Flink TaskManager - Stream processing worker
+
+### Verification
+
+Check that all services are running:
 ```bash
-# Start Colima with appropriate resources
-colima start --cpu 4 --memory 8 --disk 50
-
-# Verify Colima is running
-colima status
-```
-
-### Step 3: Clone the Repository
-```bash
-# Clone the project
-git clone https://github.com/akshitanchan/global-conflict-monitor
-cd global-conflict-monitor
-
-# Optional: Download JARs (if missing)
-curl -L -O https://repo1.maven.org/maven2/com/ververica/flink-sql-connector-postgres-cdc/2.4.2/flink-sql-connector-postgres-cdc-2.4.2.jar
-curl -L -O https://jdbc.postgresql.org/download/postgresql-42.7.1.jar
-```
-
-### Step 4: Start all Services and Verify
-```bash
-# Start docker cluster
-docker compose up -d
-
-# Check container status
 docker compose ps
 ```
 
-## Phase 2 Quickstart (ingestion + incremental views)
-
-### 0) start containers
+Access Flink Web UI:
 ```bash
-./setup.sh
-./scripts/phase1-infra-test.sh
+open http://localhost:8081  # macOS
+# or visit http://localhost:8081 in browser
 ```
 
-### 1) load data (tab-separated, header)
-Put your big file in `./data/` (docker mounts it into Postgres as `/data`), then run:
+Test PostgreSQL connection:
 ```bash
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt
+```
+
+---
+
+## Data Loading and Pipeline Execution
+
+### Step 1: Load GDELT Dataset
+
+Place your GDELT data file in `./data/` directory, then load:
+```bash
+# Load full dataset
 ./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+
+# Or load limited rows for testing (faster)
+SMALL_LOAD_LINES=20000 ./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
 ```
 
-### 2) create Flink JDBC sinks
-```bash
-./scripts/apply-flink-sinks.sh
-```
+### Step 2: Start Incremental Aggregation Jobs
 
-### 3) start streaming incremental aggregations (keeps running)
-Run in a separate terminal:
+Launch the streaming pipeline (runs continuously):
 ```bash
 ./scripts/start-flink-aggregations.sh
 ```
-
-### 4) sanity check results in Postgres
+Verify jobs are running:
 ```bash
-docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_event_volume_by_quadclass limit 5;"
-docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from top_actors order by total_events desc limit 10;"
-docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c "select * from daily_cameo_metrics order by total_events desc limit 10;"
+# Via Web UI
+open http://localhost:8081
+
+# Via command line
+curl -s http://localhost:8081/jobs/overview | grep -c '"state":"RUNNING"'
+# Expected: 4
 ```
 
-### 5) simulate changes (inserts/updates/deletes + late arrivals)
-Install python deps (locally):
+### Step 3: Verify Result Tables
+
+Check that aggregates have been computed:
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt << EOF
+SELECT 'daily_event_volume' as table_name, COUNT(*) FROM daily_event_volume_by_quadclass
+UNION ALL
+SELECT 'dyad_interactions', COUNT(*) FROM dyad_interactions
+UNION ALL
+SELECT 'top_actors', COUNT(*) FROM top_actors
+UNION ALL
+SELECT 'daily_cameo_metrics', COUNT(*) FROM daily_cameo_metrics;
+EOF
 ```
 
-Then run:
+All counts should be greater than zero. Check timestamps:
 ```bash
-python scripts/simulate-changes.py --insert 200
-python scripts/simulate-changes.py --update 50
-python scripts/simulate-changes.py --delete 20
-python scripts/simulate-changes.py --insert 100 --late
+docker exec -it gdelt-postgres psql -U flink_user -d gdelt -c \
+  "SELECT MAX(last_updated) FROM top_actors;"
 ```
 
-You should see the aggregate tables update within seconds.
+Timestamp should be recent (within last 2 minutes).
 
-### Top-K cameo per day
-We compute Top-K by querying the per-day cameo aggregate table:
-```sql
-select cameo_code, total_events
-from daily_cameo_metrics
-where event_date = 19790101
-order by total_events desc
-limit 10;
+---
+
+## Testing Incremental Processing
+
+### Insert New Events
+```bash
+# Insert 100 new events
+./scripts/load-gdelt-copy.sh SMALL_LOAD_LINES=20000
 ```
-This is "bounded" to a single `event_date` bucket.
 
+### Update and Delete Operations
+```bash
+# Update existing events
+python3 scripts/workload.py --update 50
+# Delete events
+python3 scripts/workload.py --delete 20
+```
+
+All operations should reflect in aggregate tables within 5-10 seconds.
+
+---
+
+### Dashboard
+
+Launch Streamlit dashboard:
+```bash
+pip3 install -r requirements.txt
+streamlit run app.py
+```
+
+Access at: `http://localhost:8501`
+
+The dashboard provides:
+- Real-time metrics (total events, conflict rate, avg Goldstein score)
+- Geographic visualization (world map)
+- Temporal trends (event volume over time)
+- Interactive controls for benchmark testing
+
+---
