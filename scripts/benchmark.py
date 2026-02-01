@@ -1,4 +1,4 @@
-# benchmark_comparison_improved.py
+# benchmark_comparison.py
 import time
 import psycopg2
 import statistics
@@ -18,7 +18,7 @@ print("=" * 70)
 print(" POSTGRES-ONLY vs FLINK: QUERY PERFORMANCE COMPARISON")
 print("=" * 70)
 
-# Baseline (raw table) — FIXED: use SUM(num_events) not COUNT(*)
+# Queries for baseline
 queries_baseline = [
     ("Daily Events", """
         SELECT
@@ -75,7 +75,7 @@ queries_baseline = [
 ]
 
 
-# "Flink" path = query the precomputed aggregate tables (stored in Postgres)
+# Queries for flink
 queries_flink = [
     ("Daily Events", """
         SELECT
@@ -139,7 +139,7 @@ ITERATIONS = 10
 for (name_baseline, q_baseline), (_, q_flink) in zip(queries_baseline, queries_flink):
     print(f"\nBenchmarking: {name_baseline}...")
 
-    # Baseline timings
+    # Baseline time measurements
     times_baseline = []
     rows_baseline = None
     for i in range(ITERATIONS):
@@ -152,7 +152,7 @@ for (name_baseline, q_baseline), (_, q_flink) in zip(queries_baseline, queries_f
         cur.close()
         print(f"  Postgres-only run {i+1}/{ITERATIONS}: {format_time(elapsed)}")
 
-    # Aggregate-table timings
+    # Aggregate time measurements
     times_flink = []
     rows_flink = None
     for i in range(ITERATIONS):
