@@ -1,6 +1,4 @@
--- ==============================================
 -- Results tables (populated by Flink)
--- ==============================================
 
 CREATE TABLE IF NOT EXISTS daily_event_volume_by_quadclass (
   event_date INT NOT NULL,
