@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Append GDELT MASTERREDUCEDV2 data into public.gdelt_events.
-# - NO TRUNCATE
-# - uses current row count as the offset unless SMALL_LOAD_OFFSET is provided
-# - IMPORTANT FIXES:
-#   (1) offset is COUNT(*) (line offset), NOT MAX(globaleventid)
-#   (2) sync globaleventid sequence to MAX(globaleventid) before COPY (prevents duplicates)
-
 FILE_PATH="${1:-data/GDELT.MASTERREDUCEDV2.TXT}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-gdelt-postgres}"
 DB="${POSTGRES_DB:-gdelt}"
@@ -33,7 +26,7 @@ echo "[append] file: $FILE_PATH"
 echo "[append] container path: $container_file"
 echo "[append] postgres container: $POSTGRES_CONTAINER"
 
-# ---- FIX #1: offset must be "how many rows already loaded", i.e., COUNT(*)
+# default: append after existing rows
 if [[ -z "$SMALL_LOAD_OFFSET" ]]; then
   echo "[append] computing offset from current row COUNT(*) in public.gdelt_events..."
   SMALL_LOAD_OFFSET="$(docker exec -i "$POSTGRES_CONTAINER" psql -U "$USER" -d "$DB" -t -A -c \
@@ -42,6 +35,7 @@ if [[ -z "$SMALL_LOAD_OFFSET" ]]; then
   SMALL_LOAD_OFFSET="${SMALL_LOAD_OFFSET//$'\n'/}"
 fi
 
+# guard: offset must be int
 if ! [[ "$SMALL_LOAD_OFFSET" =~ ^[0-9]+$ ]]; then
   echo "error: SMALL_LOAD_OFFSET must be an integer (got: $SMALL_LOAD_OFFSET)" >&2
   exit 2
@@ -49,8 +43,7 @@ fi
 
 echo "[append] lines=$SMALL_LOAD_LINES  offset=$SMALL_LOAD_OFFSET"
 
-# ---- FIX #2: sync the sequence so auto-assigned globaleventid never reuses old IDs
-# If globaleventid is SERIAL/BIGSERIAL, this prevents duplicate key errors.
+# keep globaleventid seq in sync
 echo "[append] syncing globaleventid sequence to MAX(globaleventid)..."
 docker exec -i "$POSTGRES_CONTAINER" psql -U "$USER" -d "$DB" -v ON_ERROR_STOP=1 -t -A -c "
 DO \$\$
@@ -74,6 +67,7 @@ END
 
 SAMPLE_LINES="${SAMPLE_LINES:-20000}"
 
+# sniff 11 vs 17 cols
 echo "[append] detecting column count from first ${SAMPLE_LINES} data lines..."
 detect_out="$(docker exec -i "$POSTGRES_CONTAINER" bash -lc "
 FILE='$container_file';
@@ -92,6 +86,7 @@ c11="$(echo "$detect_out" | sed -n 's/.*c11=\([0-9]\+\).*/\1/p')"
 expected_nf=17
 cols_clause="event_date,source_actor,target_actor,cameo_code,num_events,num_articles,quad_class,goldstein,source_geo_type,source_geo_lat,source_geo_long,target_geo_type,target_geo_lat,target_geo_long,action_geo_type,action_geo_lat,action_geo_long"
 
+# pick the dominant format
 if [[ "${c11:-0}" -gt "${c17:-0}" ]]; then
   expected_nf=11
   cols_clause="event_date,source_actor,target_actor,cameo_code,num_events,num_articles,quad_class,goldstein,action_geo_type,action_geo_lat,action_geo_long"
@@ -99,13 +94,15 @@ fi
 
 echo "[append] using expected_nf=$expected_nf"
 
-# Header is line 1, so data starts at line 2.
-# If we already loaded N rows, next row is at data line (2 + N).
+# header is line 1
+# data starts line 2
 start_line=$((2 + SMALL_LOAD_OFFSET))
 
+# stream: slice, sanitize
 STREAM_CMD="tail -n +${start_line} \"$container_file\" | head -n ${SMALL_LOAD_LINES}"
 STREAM_CMD="$STREAM_CMD | tr -d '\\000' | tr -d '\\r'"
 
+# normalize to chosen schema
 if [[ "$expected_nf" -eq 17 ]]; then
   STREAM_CMD="$STREAM_CMD | awk -F \"\\t\" 'BEGIN{OFS=\"\\t\"}
     NF==17 { print; next }
@@ -126,11 +123,13 @@ else
   '"
 fi
 
+# bulk load via stdin
 echo "[append] streaming sanitized rows into \\copy FROM STDIN..."
 docker exec -i "$POSTGRES_CONTAINER" bash -lc "$STREAM_CMD" \
   | docker exec -i "$POSTGRES_CONTAINER" psql -U "$USER" -d "$DB" -v ON_ERROR_STOP=1 -c "\
 \\copy public.gdelt_events($cols_clause) \
 FROM STDIN WITH (FORMAT text, DELIMITER E'\\t', NULL '', ENCODING 'UTF8');"
 
+# quick sanity count
 echo "[append] done. row count now:"
 docker exec -i "$POSTGRES_CONTAINER" psql -U "$USER" -d "$DB" -t -A -c "SELECT COUNT(*) FROM public.gdelt_events;"

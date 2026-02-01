@@ -20,7 +20,7 @@ def today_int():
 def rand_date(late=False):
     if not late:
         return today_int()
-    # late arrival: pick a past date in a reasonable range
+    # late arrivals
     return random.choice([19790101, 19800101, 19900101, 20010101, 20150101])
 
 def insert_events(conn, n=100, late=False):
@@ -31,10 +31,10 @@ def insert_events(conn, n=100, late=False):
             random.choice(COUNTRIES),
             random.choice(COUNTRIES),
             random.choice(CAMEO),
-            random.randint(1,3),                 # num_events
-            random.randint(1,10),                # num_articles
+            random.randint(1,3), # num_events
+            random.randint(1,10), # num_articles
             random.choice(QUAD),
-            round(random.uniform(-10, 10), 2),   # goldstein
+            round(random.uniform(-10, 10), 2), # goldstein
         ))
     with conn.cursor() as cur:
         execute_values(cur, """
@@ -68,10 +68,7 @@ def delete_events(conn, n=20):
 def main():
     import argparse
     ap=argparse.ArgumentParser(description="simulate inserts/updates/deletes for gdelt_events")
-    # allow both styles:
-    #   --insert 50
-    #   --insert --n 50
-    # (same for --update / --delete)
+    # allow both --insert 50 and --insert --n 50
     ap.add_argument("--n", type=int, default=None, help="default count when using --insert/--update/--delete as flags")
     ap.add_argument("--insert", nargs="?", const=-1, type=int, default=0, help="number of inserts")
     ap.add_argument("--update", nargs="?", const=-1, type=int, default=0, help="number of updates")
@@ -79,6 +76,7 @@ def main():
     ap.add_argument("--late", action="store_true", help="inserts use past dates (late arrivals)")
     args=ap.parse_args()
 
+    # -1 means flag present, no value
     def _resolve_count(val: int) -> int:
         if val == -1:
             if args.n is None:
