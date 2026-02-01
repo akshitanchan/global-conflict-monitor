@@ -255,7 +255,7 @@ lsn_after="$(pg_exec "select confirmed_flush_lsn::text from pg_replication_slots
 if [[ -n "$lsn_before" && -n "$lsn_after" && "$lsn_after" != "$lsn_before" ]]; then
   ok "confirmed_flush_lsn advanced: $lsn_before -> $lsn_after"
 else
-  warn "confirmed_flush_lsn did not change (or unavailable). sink update is still valid end-to-end proof."
+  warn "confirmed_flush_lsn did not change (or unavailable). sink update is still a valid end-to-end proof."
 fi
 
 echo
