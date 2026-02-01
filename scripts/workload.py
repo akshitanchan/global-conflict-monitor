@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-"""
-UPDATE and DELETE operations on real event IDs
-(Use bash script for INSERT - it's faster)
-"""
+# UPDATE and DELETE operations on real events
 import os
 import sys
 import random
 import psycopg2
 from psycopg2.extras import execute_batch
 
-# Database config
+# db config
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "gdelt")
@@ -18,7 +15,6 @@ DB_PASS = os.getenv("DB_PASS", "flink_pass")
 
 
 def get_conn():
-    """Get database connection"""
     return psycopg2.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -29,17 +25,13 @@ def get_conn():
 
 
 def update_real_events(num_rows):
-    """
-    Update REAL existing events by their actual globaleventid
-    Updates goldstein and num_events to random values
-    """
     print(f"[update] updating {num_rows} real events")
     
     conn = get_conn()
     cur = conn.cursor()
     
     try:
-        # Check table size
+        # check table size
         cur.execute("SELECT COUNT(*) FROM public.gdelt_events")
         total = cur.fetchone()[0]
         
@@ -51,7 +43,7 @@ def update_real_events(num_rows):
             num_rows = total
             print(f"[update] adjusting to {num_rows} (table size)")
         
-        # Get random REAL event IDs from the table
+        # grab random event IDs
         print(f"[update] selecting {num_rows} random event IDs...")
         cur.execute("""
             SELECT globaleventid 
@@ -68,14 +60,14 @@ def update_real_events(num_rows):
         
         print(f"[update] updating {len(event_ids)} events...")
         
-        # Update each event with random values
+        # build update batch
         updates = []
         for event_id in event_ids:
             new_goldstein = round(random.uniform(-10, 10), 2)
             new_num_events = random.randint(1, 3)
             updates.append((new_goldstein, new_num_events, event_id))
         
-        # Batch update
+        # batch update
         execute_batch(cur, """
             UPDATE public.gdelt_events 
             SET goldstein = %s, num_events = %s 
@@ -85,7 +77,7 @@ def update_real_events(num_rows):
         conn.commit()
         print(f"[update] done: {len(event_ids)} events updated")
         
-        # Show sample of what was updated
+        # show sample
         if event_ids:
             print(f"[update] sample event IDs: {event_ids[:5]}")
     
@@ -101,17 +93,13 @@ def update_real_events(num_rows):
 
 
 def delete_real_events(num_rows):
-    """
-    Delete REAL events by their actual globaleventid
-    Deletes random events from the table
-    """
     print(f"[delete] deleting {num_rows} real events")
     
     conn = get_conn()
     cur = conn.cursor()
     
     try:
-        # Check table size
+        # check table size
         cur.execute("SELECT COUNT(*) FROM public.gdelt_events")
         total = cur.fetchone()[0]
         
@@ -123,7 +111,7 @@ def delete_real_events(num_rows):
             num_rows = total
             print(f"[delete] adjusting to {num_rows} (table size)")
         
-        # Get random REAL event IDs
+        # grab random event IDs
         print(f"[delete] selecting {num_rows} random event IDs to delete...")
         cur.execute("""
             SELECT globaleventid 
@@ -141,7 +129,7 @@ def delete_real_events(num_rows):
         print(f"[delete] deleting {len(event_ids)} events...")
         print(f"[delete] sample event IDs: {event_ids[:5]}")
         
-        # Delete by IDs
+        # delete by IDs
         cur.execute("""
             DELETE FROM public.gdelt_events 
             WHERE globaleventid = ANY(%s)

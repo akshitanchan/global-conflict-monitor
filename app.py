@@ -1,25 +1,4 @@
-"""
-Global Conflict Monitor Dashboard
-
-Real-time monitoring dashboard for geopolitical conflict events using GDELT data.
-Built with Streamlit for rapid prototyping and Apache Flink for incremental aggregations.
-
-Architecture:
-- PostgreSQL: Raw GDELT events + materialized aggregate views
-- Apache Flink: Incremental view maintenance (IVM) via SQL triggers
-- Streamlit: Frontend with LISTEN/NOTIFY for sub-second updates
-- GDELT 1.0 Reduced: 45+ years of conflict event data (1979-present)
-
-Performance notes:
-- Heavy queries cached via @st.cache_data with TTL=3600s
-- Cache busted on NOTIFY from PostgreSQL triggers (sub-second latency)
-- Fallback polling every 30s in case NOTIFY is missed
-- Separate DB connections for LISTEN vs queries to avoid blocking
-
-Author: [Your Name]
-Last updated: January 2026
-"""
-
+#!/usr/bin/env python3
 import os
 import sys
 import time
@@ -36,31 +15,25 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
-
+# config
 st.set_page_config(page_title="Global Conflict Monitor", layout="wide")
 
-# Database connection from environment (Docker Compose defaults)
+# db connection from environment
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "gdelt")
 DB_USER = os.getenv("DB_USER", "flink_user")
 DB_PASS = os.getenv("DB_PASS", "flink_pass")
 
-# PostgreSQL NOTIFY channel for real-time updates
+# postgres notify channel for real-time updates
 NOTIFY_CHANNEL = "view_updated"
 
-# Benchmark workload scripts
+# benchmark workload scripts
 APPEND_SH = os.getenv("APPEND_SH", "./scripts/load-gdelt-append.sh")
 WORKLOAD_PY = os.getenv("WORKLOAD_PY", "scripts/workload.py")
 PYTHON_BIN = os.getenv("PYTHON_BIN", sys.executable)
 
 
-# ============================================================================
-# CSS STYLING
-# ============================================================================
-
+# css styling
 st.markdown(
     """
     <style>
@@ -200,7 +173,6 @@ st.markdown(
       .sp-18{ height: 18px; }
       .sp-26{ height: 26px; }
 
-      /* Style Plotly charts and dataframes to match design system */
       div[data-testid="stPlotlyChart"] > div,
       div[data-testid="stDataFrame"] > div {
         background: linear-gradient(135deg, var(--panel2), var(--panel)) !important;
@@ -218,12 +190,8 @@ st.markdown(
 )
 
 
-# ============================================================================
-# DATABASE HELPERS
-# ============================================================================
-
+# db helpers
 def get_db_conn():
-    """Create new database connection"""
     return psycopg2.connect(
         host=DB_HOST,
         database=DB_NAME,
@@ -233,7 +201,7 @@ def get_db_conn():
 
 
 def qdf(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
-    """Execute query and return DataFrame. Connection auto-closed."""
+    """run query and return dataframe"""
     conn = get_db_conn()
     try:
         return pd.read_sql(sql, conn, params=params)
@@ -242,19 +210,13 @@ def qdf(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
 
 
 def int_yyyymmdd(d: date) -> int:
-    """Convert date to YYYYMMDD integer format (GDELT convention)"""
+    """convert date to yyyymmdd integer format"""
     return int(d.strftime("%Y%m%d"))
 
 
-# ============================================================================
-# REAL-TIME UPDATE MECHANISM (LISTEN/NOTIFY)
-# ============================================================================
-
+# real-time update mechanism (listen/notify)
 def setup_listener():
-    """
-    Create dedicated connection for PostgreSQL LISTEN/NOTIFY.
-    Must use autocommit mode and separate connection to avoid blocking.
-    """
+    """create dedicated connection for postgres listen/notify"""
     try:
         conn = get_db_conn()
         conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
@@ -266,17 +228,14 @@ def setup_listener():
 
 
 def check_notifications() -> bool:
-    """
-    Non-blocking check for NOTIFY events.
-    Returns True if notification received, False otherwise.
-    """
+    """non-blocking check for notify events"""
     if st.session_state.get("listener_conn") is None:
         st.session_state.listener_conn = setup_listener()
         return False
 
     conn = st.session_state.listener_conn
     try:
-        # Non-blocking check using select with 0 timeout
+        # non-blocking check using select with 0 timeout
         ready = select.select([conn], [], [], 0)
         if ready == ([conn], [], []):
             conn.poll()
@@ -288,7 +247,7 @@ def check_notifications() -> bool:
         return False
 
     except Exception:
-        # Connection died - recreate it
+        # connection died - recreate it
         try:
             conn.close()
         except Exception:
@@ -297,30 +256,25 @@ def check_notifications() -> bool:
         return False
 
 
-# ============================================================================
-# SESSION STATE INITIALIZATION
-# ============================================================================
-
-# LISTEN/NOTIFY connection (persistent across reruns)
+# session state initialization
 if "listener_conn" not in st.session_state:
     st.session_state.listener_conn = setup_listener()
 
-# Cache versioning - bump this to invalidate all cached queries
+# cache versioning - bump this to invalidate all cached queries
 if "data_version" not in st.session_state:
     st.session_state.data_version = 0
 
-# Track last refresh for UI display
 if "last_refresh_time" not in st.session_state:
     st.session_state.last_refresh_time = datetime.now()
 
-# Fallback polling state
+# fallback polling state
 if "last_polled_max_date" not in st.session_state:
     st.session_state.last_polled_max_date = None
 
 if "last_poll_check_ts" not in st.session_state:
     st.session_state.last_poll_check_ts = 0.0
 
-# Benchmark workload state
+# benchmark workload state
 if "processing_time" not in st.session_state:
     st.session_state.processing_time = None
 if "last_batch_size" not in st.session_state:
@@ -331,11 +285,7 @@ if "last_throughput" not in st.session_state:
     st.session_state.last_throughput = None
 
 
-# ============================================================================
-# DATASET METADATA
-# ============================================================================
-
-# Query min/max event dates to determine available range
+# dataset metadata
 meta = qdf("""
     SELECT MIN(event_date) AS min_event_date,
            MAX(event_date) AS max_event_date
@@ -351,18 +301,15 @@ max_date_int = int(meta.loc[0, "max_event_date"])
 min_date = pd.to_datetime(str(min_date_int), format="%Y%m%d").date()
 max_date = pd.to_datetime(str(max_date_int), format="%Y%m%d").date()
 
-# Consider data "live" if within last week
+# consider data "live" if within last week
 is_live = (date.today() - max_date).days <= 7
 
 
-# ============================================================================
-# SIDEBAR CONTROLS
-# ============================================================================
-
+# sidebar controls
 with st.sidebar:
     st.markdown("## Filters")
 
-    # Date range selector with toggle for all-time view
+    # date range selector with toggle for all-time view
     show_all = st.toggle("All dates (default)", value=True)
 
     if show_all:
@@ -389,22 +336,22 @@ with st.sidebar:
 
     live_refresh = st.toggle("Live mode", value=True)
     
-    # UI refresh interval - how often to check for NOTIFY (lightweight)
+    # ui refresh interval / how often to check for notify
     refresh_seconds = st.slider("Check interval (seconds)", 1, 30, 1)
     
-    # Fallback polling interval - expensive MAX(event_date) query
+    # fallback polling interval / expensive max(event_date) query
     poll_seconds = st.slider("Fallback poll (seconds)", 10, 120, 30)
 
     st.markdown("---")
     st.markdown("## Benchmark controls")
 
-    # INSERT workload - bulk load from file
+    # insert workload / bulk load from file
     ins_lines = st.number_input("Insert lines", min_value=1000, max_value=5_000_000, value=20000, step=1000)
     ins_file = st.text_input("Input file", value="data/GDELT.MASTERREDUCEDV2.TXT")
 
     if st.button("Insert", use_container_width=True):
         t0 = time.time()
-        with st.spinner("Running insert (append)…"):
+        with st.spinner("Running insert (append)..."):
             try:
                 env = os.environ.copy()
                 env["SMALL_LOAD_LINES"] = str(int(ins_lines))
@@ -427,16 +374,16 @@ with st.sidebar:
         st.session_state.last_operation = "INSERT"
         st.session_state.last_throughput = (int(ins_lines) / elapsed) if elapsed > 0 else None
 
-        # Trigger single refresh (Flink IVM will update incrementally)
+        # trigger refresh
         st.session_state.data_version += 1
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # UPDATE workload - random row updates
+    # update workload / random row updates
     upd_n = st.number_input("Update rows", min_value=10, max_value=5_000_000, value=50, step=10)
     if st.button("Update", use_container_width=True):
         t0 = time.time()
-        with st.spinner("Running update…"):
+        with st.spinner("Running update..."):
             try:
                 subprocess.run(
                     [PYTHON_BIN, WORKLOAD_PY, "update", "--rows", str(int(upd_n))],
@@ -460,11 +407,11 @@ with st.sidebar:
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # DELETE workload - random row deletions
+    # delete workload / random row deletions
     del_n = st.number_input("Delete rows", min_value=10, max_value=5_000_000, value=20, step=10)
     if st.button("Delete", use_container_width=True):
         t0 = time.time()
-        with st.spinner("Running delete…"):
+        with st.spinner("Running delete..."):
             try:
                 subprocess.run(
                     [PYTHON_BIN, WORKLOAD_PY, "delete", "--rows", str(int(del_n))],
@@ -488,7 +435,7 @@ with st.sidebar:
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # Display last benchmark results
+    # display last benchmark results
     if st.session_state.processing_time is not None:
         tp = st.session_state.last_throughput
         tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
@@ -500,19 +447,16 @@ with st.sidebar:
         )
 
 
-# Convert selected dates to GDELT integer format
+# convert selected dates to gdelt integer format
 start_int = int_yyyymmdd(start_d)
 end_int = int_yyyymmdd(end_d)
 
 
-# ============================================================================
-# CHANGE DETECTION (NOTIFY + FALLBACK POLL)
-# ============================================================================
-
-# Check for NOTIFY from PostgreSQL triggers (fast, sub-second)
+# change detection (notify + fallback poll)
+# check for notify from postgres triggers (fast, sub-second)
 got_notify = check_notifications()
 
-# Fallback: poll MAX(event_date) periodically in case NOTIFY was missed
+# fallback: poll max(event_date) periodically in case notify was missed
 polled_new = False
 now_ts = time.time()
 
@@ -528,29 +472,19 @@ if live_refresh and (now_ts - st.session_state.last_poll_check_ts) >= poll_secon
     except Exception:
         pass
 
-# Bump data version to invalidate cache if change detected
+# bump data version to invalidate cache if change detected
 if got_notify or polled_new:
     st.session_state.data_version += 1
     st.session_state.last_refresh_time = datetime.now()
 
 
-# ============================================================================
-# DATA LOADING (CACHED WITH VERSION-BASED INVALIDATION)
-# ============================================================================
-
+# data loading (cached with version-based invalidation)
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.DataFrame]:
-    """
-    Load all dashboard data with aggressive caching.
-    Cache is busted when data_version changes (triggered by NOTIFY/poll).
-    
-    Performance: These queries hit Flink-maintained materialized views,
-    so they're fast even on millions of rows. Cache prevents redundant
-    queries when just navigating the UI.
-    """
+    """load all dashboard data with aggressive caching"""
     out: Dict[str, pd.DataFrame] = {}
 
-    # High-level KPIs
+    # high-level kpis
     out["kpis"] = qdf(
         """
         SELECT
@@ -563,7 +497,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # Daily time series for trend chart
+    # daily time series for trend chart
     out["trend"] = qdf(
         """
         SELECT
@@ -579,7 +513,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # Actor aggregates for choropleth map (ISO-3 country codes only)
+    # actor aggregates for choropleth map (iso-3 country codes only)
     out["actors"] = qdf(
         """
         SELECT
@@ -598,7 +532,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # Dyadic interactions (source → target pairs)
+    # dyadic interactions (source -> target pairs)
     out["dyads"] = qdf(
         """
         SELECT
@@ -617,7 +551,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i, "n": topn},
     )
 
-    # CAMEO event codes (conflict typology)
+    # cameo event codes (conflict typology)
     out["cameo"] = qdf(
         """
         SELECT
@@ -634,7 +568,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i, "n": topn},
     )
 
-    # QuadClass distribution (aggregated)
+    # quadclass distribution (aggregated)
     out["quad_dist"] = qdf(
         """
         SELECT
@@ -649,7 +583,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # QuadClass time series for trend visualization
+    # quadclass time series for trend visualization
     out["quad_time"] = qdf(
         """
         SELECT
@@ -667,7 +601,7 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
     return out
 
 
-# Load all data (cached unless version changed)
+# load all data (cached unless version changed)
 data = load_all(st.session_state.data_version, start_int, end_int, top_n)
 
 kpis = data["kpis"]
@@ -678,17 +612,14 @@ cameo = data["cameo"]
 quad_dist = data["quad_dist"]
 quad_time = data["quad_time"]
 
-# Extract KPI values
+# extract kpi values
 total_events = int(kpis.loc[0, "total_events"] or 0)
 conflict_events = int(kpis.loc[0, "conflict_events"] or 0)
 mean_goldstein = float(kpis.loc[0, "mean_goldstein"] or 0.0)
 conflict_rate = (conflict_events / total_events * 100.0) if total_events else 0.0
 
 
-# ============================================================================
-# DASHBOARD HEADER
-# ============================================================================
-
+# dashboard header
 chips = [
     f'<div class="chip"><span class="k">Latest</span> {max_date.isoformat()}</div>',
     f'<div class="chip"><span class="k">Refresh</span> {st.session_state.last_refresh_time.strftime("%H:%M:%S")}</div>',
@@ -713,12 +644,8 @@ st.markdown(
 )
 
 
-# ============================================================================
-# KPI CARDS
-# ============================================================================
-
+# kpi cards
 def kpi_card(label: str, value: str, hint: str):
-    """Render a styled KPI card"""
     st.markdown(
         f"""
         <div class="kpi">
@@ -739,7 +666,7 @@ with k2:
 with k3:
     kpi_card("Conflict rate", f"{conflict_rate:.1f}%", "Conflict / total")
 with k4:
-    # Show benchmark results if available, otherwise show Goldstein scale
+    # show benchmark results if available, otherwise show goldstein scale
     if st.session_state.processing_time is None:
         kpi_card("Avg Goldstein", f"{mean_goldstein:.2f}", "Tone (unweighted)")
     else:
@@ -754,11 +681,8 @@ with k4:
 st.markdown('<div class="sp-26"></div>', unsafe_allow_html=True)
 
 
-# ============================================================================
-# PRIMARY VISUALIZATIONS (MAP + TRENDS)
-# ============================================================================
-
-# Asymmetric column layout - map gets more space
+# primary visualizations (map + trends)
+# asymmetric column layout - map gets more space
 left, right = st.columns([1.6, 1.0])
 
 with left:
@@ -767,7 +691,7 @@ with left:
     if actors.empty:
         st.info("No ISO-3 actor rows available in this period.")
     else:
-        # Choropleth can show either event volume or Goldstein tone
+        # choropleth can show either event volume or goldstein tone
         if map_metric == "Avg Goldstein":
             fig_map = px.choropleth(
                 actors,
@@ -777,7 +701,7 @@ with left:
                 hover_name="iso3",
                 hover_data={"total_events": ":,", "mean_goldstein": ":.2f", "iso3": False},
                 color_continuous_scale="RdBu_r",
-                color_continuous_midpoint=0,  # Diverging at neutral
+                color_continuous_midpoint=0,
                 template="plotly_dark",
             )
         else:
@@ -813,7 +737,7 @@ with right:
     if trend.empty:
         st.info("No data in this range.")
     else:
-        # Multi-series line chart with dual y-axes
+        # multi-series line chart with dual y-axes
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=trend["event_day"], y=trend["total_events"],
@@ -828,7 +752,7 @@ with right:
             x=trend["event_day"], y=trend["mean_goldstein"],
             mode="lines", name="Goldstein",
             line=dict(dash="dot"),
-            yaxis="y2"  # Secondary axis for tone
+            yaxis="y2"
         ))
 
         fig.update_layout(
@@ -845,16 +769,11 @@ with right:
         st.plotly_chart(fig, use_container_width=True)
 
 
-# ============================================================================
-# DETAILED ANALYTICS TABS
-# ============================================================================
-
+# detailed analytics tabs
 st.markdown('<div class="sp-18"></div>', unsafe_allow_html=True)
 tab1, tab2, tab3 = st.tabs(["Interactions", "QuadClass", "CAMEO"])
 
-# ---------------------------------------------------------------------------
-# TAB 1: Dyadic Interactions
-# ---------------------------------------------------------------------------
+# tab 1: dyadic interactions
 with tab1:
     a, b = st.columns([1.2, 1])
     
@@ -863,7 +782,7 @@ with tab1:
         if dyads.empty:
             st.info("No dyad data available for this range.")
         else:
-            # Extract top actors from dyad pairs for heatmap axes
+            # extract top actors from dyad pairs for heatmap axes
             top_actors_list = pd.concat([dyads["source_actor"], dyads["target_actor"]]).value_counts().head(12).index.tolist()
             hm = dyads[dyads["source_actor"].isin(top_actors_list) & dyads["target_actor"].isin(top_actors_list)].copy()
             
@@ -888,9 +807,7 @@ with tab1:
         st.subheader("Top Dyads")
         st.dataframe(dyads, use_container_width=True, hide_index=True)
 
-# ---------------------------------------------------------------------------
-# TAB 2: QuadClass Analysis
-# ---------------------------------------------------------------------------
+# tab 2: quadclass analysis
 with tab2:
     c1, c2 = st.columns([1, 1.4])
 
@@ -899,7 +816,7 @@ with tab2:
         if quad_dist.empty:
             st.info("No quadclass distribution for this range.")
         else:
-            # Map numeric quad classes to readable labels
+            # map numeric quad classes to readable labels
             quad_labels = {
                 1: "Q1 Verbal Coop",
                 2: "Q2 Material Coop",
@@ -927,7 +844,7 @@ with tab2:
         if quad_time.empty:
             st.info("No quadclass time series for this range.")
         else:
-            # Stacked area chart shows composition over time
+            # stacked area chart shows composition over time
             quad_labels = {
                 1: "Q1 Verbal Coop",
                 2: "Q2 Material Coop",
@@ -937,7 +854,7 @@ with tab2:
             qt = quad_time.copy()
             qt["quad_label"] = qt["quad_class"].map(quad_labels).fillna("Q" + qt["quad_class"].astype(str))
             
-            # Color scheme: green/blue for cooperation, orange/red for conflict
+            # color scheme: green/blue for cooperation, orange/red for conflict
             fig_area = px.area(
                 qt,
                 x="event_day",
@@ -963,15 +880,13 @@ with tab2:
             )
             st.plotly_chart(fig_area, use_container_width=True)
 
-# ---------------------------------------------------------------------------
-# TAB 3: CAMEO Event Codes
-# ---------------------------------------------------------------------------
+# tab 3: cameo event codes
 with tab3:
     st.subheader("Top CAMEO Codes")
     if cameo.empty:
         st.info("No CAMEO data available for this range.")
     else:
-        # Horizontal bar chart of most frequent event types
+        # horizontal bar chart of most frequent event types
         fig_bar = px.bar(
             cameo.sort_values("total_events", ascending=True).tail(top_n),
             x="total_events", y="cameo_code", orientation="h",
@@ -987,14 +902,10 @@ with tab3:
         st.plotly_chart(fig_bar, use_container_width=True)
 
 
-# ============================================================================
-# LIVE UPDATE LOOP
-# ============================================================================
-
-# CRITICAL: Streamlit cannot receive PostgreSQL NOTIFY while idle.
-# We must rerun periodically to call check_notifications().
-# Heavy queries stay cached unless data_version changes from NOTIFY/poll.
-
+# live update loop
+# streamlit cannot receive postgres notify while idle
+# we must rerun periodically to call check_notifications()
+# heavy queries stay cached unless data_version changes from notify/poll
 if live_refresh:
     time.sleep(refresh_seconds)
     st.rerun()
