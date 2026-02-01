@@ -15,25 +15,22 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 
-# config
 st.set_page_config(page_title="Global Conflict Monitor", layout="wide")
 
-# db connection from environment
+# db config
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_NAME = os.getenv("DB_NAME", "gdelt")
 DB_USER = os.getenv("DB_USER", "flink_user")
 DB_PASS = os.getenv("DB_PASS", "flink_pass")
 
-# postgres notify channel for real-time updates
 NOTIFY_CHANNEL = "view_updated"
 
-# benchmark workload scripts
+# benchmark scripts
 APPEND_SH = os.getenv("APPEND_SH", "./scripts/load-gdelt-append.sh")
 WORKLOAD_PY = os.getenv("WORKLOAD_PY", "scripts/workload.py")
 PYTHON_BIN = os.getenv("PYTHON_BIN", sys.executable)
 
 
-# css styling
 st.markdown(
     """
     <style>
@@ -190,7 +187,6 @@ st.markdown(
 )
 
 
-# db helpers
 def get_db_conn():
     return psycopg2.connect(
         host=DB_HOST,
@@ -201,7 +197,6 @@ def get_db_conn():
 
 
 def qdf(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
-    """run query and return dataframe"""
     conn = get_db_conn()
     try:
         return pd.read_sql(sql, conn, params=params)
@@ -210,13 +205,11 @@ def qdf(sql: str, params: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
 
 
 def int_yyyymmdd(d: date) -> int:
-    """convert date to yyyymmdd integer format"""
     return int(d.strftime("%Y%m%d"))
 
 
-# real-time update mechanism (listen/notify)
 def setup_listener():
-    """create dedicated connection for postgres listen/notify"""
+    # postgres listen/notify for real-time updates
     try:
         conn = get_db_conn()
         conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
@@ -228,14 +221,12 @@ def setup_listener():
 
 
 def check_notifications() -> bool:
-    """non-blocking check for notify events"""
     if st.session_state.get("listener_conn") is None:
         st.session_state.listener_conn = setup_listener()
         return False
 
     conn = st.session_state.listener_conn
     try:
-        # non-blocking check using select with 0 timeout
         ready = select.select([conn], [], [], 0)
         if ready == ([conn], [], []):
             conn.poll()
@@ -247,7 +238,6 @@ def check_notifications() -> bool:
         return False
 
     except Exception:
-        # connection died - recreate it
         try:
             conn.close()
         except Exception:
@@ -256,25 +246,22 @@ def check_notifications() -> bool:
         return False
 
 
-# session state initialization
+# session state
 if "listener_conn" not in st.session_state:
     st.session_state.listener_conn = setup_listener()
 
-# cache versioning - bump this to invalidate all cached queries
 if "data_version" not in st.session_state:
     st.session_state.data_version = 0
 
 if "last_refresh_time" not in st.session_state:
     st.session_state.last_refresh_time = datetime.now()
 
-# fallback polling state
 if "last_polled_max_date" not in st.session_state:
     st.session_state.last_polled_max_date = None
 
 if "last_poll_check_ts" not in st.session_state:
     st.session_state.last_poll_check_ts = 0.0
 
-# benchmark workload state
 if "processing_time" not in st.session_state:
     st.session_state.processing_time = None
 if "last_batch_size" not in st.session_state:
@@ -285,7 +272,7 @@ if "last_throughput" not in st.session_state:
     st.session_state.last_throughput = None
 
 
-# dataset metadata
+# get date range from aggregated data
 meta = qdf("""
     SELECT MIN(event_date) AS min_event_date,
            MAX(event_date) AS max_event_date
@@ -301,15 +288,13 @@ max_date_int = int(meta.loc[0, "max_event_date"])
 min_date = pd.to_datetime(str(min_date_int), format="%Y%m%d").date()
 max_date = pd.to_datetime(str(max_date_int), format="%Y%m%d").date()
 
-# consider data "live" if within last week
+# check if data is current (within 7 days)
 is_live = (date.today() - max_date).days <= 7
 
 
-# sidebar controls
 with st.sidebar:
     st.markdown("## Filters")
 
-    # date range selector with toggle for all-time view
     show_all = st.toggle("All dates (default)", value=True)
 
     if show_all:
@@ -335,17 +320,12 @@ with st.sidebar:
     st.markdown("## Live updates")
 
     live_refresh = st.toggle("Live mode", value=True)
-    
-    # ui refresh interval / how often to check for notify
     refresh_seconds = st.slider("Check interval (seconds)", 1, 30, 1)
-    
-    # fallback polling interval / expensive max(event_date) query
     poll_seconds = st.slider("Fallback poll (seconds)", 10, 120, 30)
 
     st.markdown("---")
     st.markdown("## Benchmark controls")
 
-    # insert workload / bulk load from file
     ins_lines = st.number_input("Insert lines", min_value=1000, max_value=5_000_000, value=20000, step=1000)
     ins_file = st.text_input("Input file", value="data/GDELT.MASTERREDUCEDV2.TXT")
 
@@ -374,12 +354,10 @@ with st.sidebar:
         st.session_state.last_operation = "INSERT"
         st.session_state.last_throughput = (int(ins_lines) / elapsed) if elapsed > 0 else None
 
-        # trigger refresh
         st.session_state.data_version += 1
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # update workload / random row updates
     upd_n = st.number_input("Update rows", min_value=10, max_value=5_000_000, value=50, step=10)
     if st.button("Update", use_container_width=True):
         t0 = time.time()
@@ -407,7 +385,6 @@ with st.sidebar:
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # delete workload / random row deletions
     del_n = st.number_input("Delete rows", min_value=10, max_value=5_000_000, value=20, step=10)
     if st.button("Delete", use_container_width=True):
         t0 = time.time()
@@ -435,7 +412,6 @@ with st.sidebar:
         st.session_state.last_refresh_time = datetime.now()
         st.rerun()
 
-    # display last benchmark results
     if st.session_state.processing_time is not None:
         tp = st.session_state.last_throughput
         tp_txt = f"{tp:,.0f} rows/sec" if tp is not None else "—"
@@ -447,16 +423,13 @@ with st.sidebar:
         )
 
 
-# convert selected dates to gdelt integer format
 start_int = int_yyyymmdd(start_d)
 end_int = int_yyyymmdd(end_d)
 
 
-# change detection (notify + fallback poll)
-# check for notify from postgres triggers (fast, sub-second)
+# check for data changes via notify or polling
 got_notify = check_notifications()
 
-# fallback: poll max(event_date) periodically in case notify was missed
 polled_new = False
 now_ts = time.time()
 
@@ -472,19 +445,16 @@ if live_refresh and (now_ts - st.session_state.last_poll_check_ts) >= poll_secon
     except Exception:
         pass
 
-# bump data version to invalidate cache if change detected
+# invalidate cache if new data detected
 if got_notify or polled_new:
     st.session_state.data_version += 1
     st.session_state.last_refresh_time = datetime.now()
 
 
-# data loading (cached with version-based invalidation)
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.DataFrame]:
-    """load all dashboard data with aggressive caching"""
     out: Dict[str, pd.DataFrame] = {}
 
-    # high-level kpis
     out["kpis"] = qdf(
         """
         SELECT
@@ -497,7 +467,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # daily time series for trend chart
     out["trend"] = qdf(
         """
         SELECT
@@ -513,7 +482,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # actor aggregates for choropleth map (iso-3 country codes only)
     out["actors"] = qdf(
         """
         SELECT
@@ -532,7 +500,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # dyadic interactions (source -> target pairs)
     out["dyads"] = qdf(
         """
         SELECT
@@ -551,7 +518,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i, "n": topn},
     )
 
-    # cameo event codes (conflict typology)
     out["cameo"] = qdf(
         """
         SELECT
@@ -568,7 +534,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i, "n": topn},
     )
 
-    # quadclass distribution (aggregated)
     out["quad_dist"] = qdf(
         """
         SELECT
@@ -583,7 +548,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
         params={"s": start_i, "e": end_i},
     )
 
-    # quadclass time series for trend visualization
     out["quad_time"] = qdf(
         """
         SELECT
@@ -601,7 +565,6 @@ def load_all(version: int, start_i: int, end_i: int, topn: int) -> Dict[str, pd.
     return out
 
 
-# load all data (cached unless version changed)
 data = load_all(st.session_state.data_version, start_int, end_int, top_n)
 
 kpis = data["kpis"]
@@ -612,14 +575,12 @@ cameo = data["cameo"]
 quad_dist = data["quad_dist"]
 quad_time = data["quad_time"]
 
-# extract kpi values
 total_events = int(kpis.loc[0, "total_events"] or 0)
 conflict_events = int(kpis.loc[0, "conflict_events"] or 0)
 mean_goldstein = float(kpis.loc[0, "mean_goldstein"] or 0.0)
 conflict_rate = (conflict_events / total_events * 100.0) if total_events else 0.0
 
 
-# dashboard header
 chips = [
     f'<div class="chip"><span class="k">Latest</span> {max_date.isoformat()}</div>',
     f'<div class="chip"><span class="k">Refresh</span> {st.session_state.last_refresh_time.strftime("%H:%M:%S")}</div>',
@@ -644,7 +605,6 @@ st.markdown(
 )
 
 
-# kpi cards
 def kpi_card(label: str, value: str, hint: str):
     st.markdown(
         f"""
@@ -666,7 +626,6 @@ with k2:
 with k3:
     kpi_card("Conflict rate", f"{conflict_rate:.1f}%", "Conflict / total")
 with k4:
-    # show benchmark results if available, otherwise show goldstein scale
     if st.session_state.processing_time is None:
         kpi_card("Avg Goldstein", f"{mean_goldstein:.2f}", "Tone (unweighted)")
     else:
@@ -681,8 +640,6 @@ with k4:
 st.markdown('<div class="sp-26"></div>', unsafe_allow_html=True)
 
 
-# primary visualizations (map + trends)
-# asymmetric column layout - map gets more space
 left, right = st.columns([1.6, 1.0])
 
 with left:
@@ -691,7 +648,6 @@ with left:
     if actors.empty:
         st.info("No ISO-3 actor rows available in this period.")
     else:
-        # choropleth can show either event volume or goldstein tone
         if map_metric == "Avg Goldstein":
             fig_map = px.choropleth(
                 actors,
@@ -737,7 +693,6 @@ with right:
     if trend.empty:
         st.info("No data in this range.")
     else:
-        # multi-series line chart with dual y-axes
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=trend["event_day"], y=trend["total_events"],
@@ -769,11 +724,9 @@ with right:
         st.plotly_chart(fig, use_container_width=True)
 
 
-# detailed analytics tabs
 st.markdown('<div class="sp-18"></div>', unsafe_allow_html=True)
 tab1, tab2, tab3 = st.tabs(["Interactions", "QuadClass", "CAMEO"])
 
-# tab 1: dyadic interactions
 with tab1:
     a, b = st.columns([1.2, 1])
     
@@ -782,7 +735,6 @@ with tab1:
         if dyads.empty:
             st.info("No dyad data available for this range.")
         else:
-            # extract top actors from dyad pairs for heatmap axes
             top_actors_list = pd.concat([dyads["source_actor"], dyads["target_actor"]]).value_counts().head(12).index.tolist()
             hm = dyads[dyads["source_actor"].isin(top_actors_list) & dyads["target_actor"].isin(top_actors_list)].copy()
             
@@ -807,7 +759,6 @@ with tab1:
         st.subheader("Top Dyads")
         st.dataframe(dyads, use_container_width=True, hide_index=True)
 
-# tab 2: quadclass analysis
 with tab2:
     c1, c2 = st.columns([1, 1.4])
 
@@ -816,7 +767,6 @@ with tab2:
         if quad_dist.empty:
             st.info("No quadclass distribution for this range.")
         else:
-            # map numeric quad classes to readable labels
             quad_labels = {
                 1: "Q1 Verbal Coop",
                 2: "Q2 Material Coop",
@@ -844,7 +794,6 @@ with tab2:
         if quad_time.empty:
             st.info("No quadclass time series for this range.")
         else:
-            # stacked area chart shows composition over time
             quad_labels = {
                 1: "Q1 Verbal Coop",
                 2: "Q2 Material Coop",
@@ -854,7 +803,6 @@ with tab2:
             qt = quad_time.copy()
             qt["quad_label"] = qt["quad_class"].map(quad_labels).fillna("Q" + qt["quad_class"].astype(str))
             
-            # color scheme: green/blue for cooperation, orange/red for conflict
             fig_area = px.area(
                 qt,
                 x="event_day",
@@ -880,13 +828,11 @@ with tab2:
             )
             st.plotly_chart(fig_area, use_container_width=True)
 
-# tab 3: cameo event codes
 with tab3:
     st.subheader("Top CAMEO Codes")
     if cameo.empty:
         st.info("No CAMEO data available for this range.")
     else:
-        # horizontal bar chart of most frequent event types
         fig_bar = px.bar(
             cameo.sort_values("total_events", ascending=True).tail(top_n),
             x="total_events", y="cameo_code", orientation="h",
@@ -902,10 +848,7 @@ with tab3:
         st.plotly_chart(fig_bar, use_container_width=True)
 
 
-# live update loop
-# streamlit cannot receive postgres notify while idle
-# we must rerun periodically to call check_notifications()
-# heavy queries stay cached unless data_version changes from notify/poll
+# rerun periodically to check for updates
 if live_refresh:
     time.sleep(refresh_seconds)
     st.rerun()
