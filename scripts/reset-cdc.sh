@@ -19,19 +19,21 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-flink_pass}"
 PUBLICATION_NAME="${PUBLICATION_NAME:-gdelt_flink_pub}"
 SLOT_NAME="${SLOT_NAME:-gdelt_flink_slot}"
 
-# optional: stop flink first (set STOP_FLINK=1)
 STOP_FLINK="${STOP_FLINK:-0}"
 
+# sql command
 pg_exec() {
   docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" "$POSTGRES_CONTAINER" \
     psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
+# pause flink consumers
 if [[ "$STOP_FLINK" == "1" ]]; then
   echo "[stop] stopping flink services via compose"
   $COMPOSE_CMD -f "$COMPOSE_FILE" stop jobmanager taskmanager || true
 fi
 
+# drop streaming connection
 echo "[reset] terminating active slot pid (if any)"
 active_pid="$(pg_exec "select active_pid from pg_replication_slots where slot_name='${SLOT_NAME}';" | tr -d '[:space:]')"
 if [[ -n "$active_pid" && "$active_pid" != "0" ]]; then
@@ -42,9 +44,11 @@ else
   echo "[reset] no active pid for slot"
 fi
 
+# blow away slot
 echo "[reset] dropping replication slot if exists"
 pg_exec "select pg_drop_replication_slot('${SLOT_NAME}') where exists (select 1 from pg_replication_slots where slot_name='${SLOT_NAME}');" >/dev/null || true
 
+# blow away publication
 echo "[reset] dropping publication if exists"
 pg_exec "drop publication if exists ${PUBLICATION_NAME};" >/dev/null || true
 
