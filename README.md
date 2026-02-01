@@ -91,10 +91,10 @@ docker exec -it gdelt-postgres psql -U flink_user -d gdelt
 Place your GDELT data file in `./data/` directory, then load:
 ```bash
 # Load full dataset
-./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+./scripts/load-gdelt.sh data/GDELT.MASTERREDUCEDV2.TXT
 
 # Or load limited rows for testing (faster)
-SMALL_LOAD_LINES=20000 ./scripts/load-gdelt-copy.sh data/GDELT.MASTERREDUCEDV2.TXT
+SMALL_LOAD_LINES=20000 ./scripts/load-gdelt.sh data/GDELT.MASTERREDUCEDV2.TXT
 ```
 
 ### Step 2: Start Incremental Aggregation Jobs
@@ -143,7 +143,7 @@ Timestamp should be recent (within last 2 minutes).
 ### Insert New Events
 ```bash
 # Insert 100 new events
-./scripts/load-gdelt-copy.sh SMALL_LOAD_LINES=20000
+./scripts/load-gdelt.sh SMALL_LOAD_LINES=20000
 ```
 
 ### Update and Delete Operations
