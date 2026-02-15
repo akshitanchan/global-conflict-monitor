@@ -1,4 +1,4 @@
-# GLOBAL CONFLICT MONITOR
+# Global Conflict Manager
 
 Real-time analytics pipeline for GDELT event data using PostgreSQL Change Data Capture, Apache Flink stream processing, incremental materialized view maintenance and Streamlit.
 
